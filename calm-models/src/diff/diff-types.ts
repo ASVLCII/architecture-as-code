@@ -42,6 +42,7 @@ export interface RelationshipRenameMapping {
 export interface InvalidDiffItems {
     nodes: unknown[];
     relationships: unknown[];
+    flows?: unknown[];
 }
 
 /**
@@ -127,9 +128,12 @@ export interface FlowDiffResult {
     flowsRemoved: CalmFlowSchema[];
     flowsModified: FlowChange[];
     flowsSame: CalmFlowSchema[];
+    invalidItems?: InvalidDiffItems;
 }
 
 /**
+ * Represents the result of diffing two CALM Metadata Schema objects.
+ */
 export interface MetadataDiffResult {
     metadataObjectsAdded: Record<string, unknown>[];
     metadataObjectsRemoved: Record<string, unknown>[];

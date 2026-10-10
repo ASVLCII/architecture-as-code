@@ -176,14 +176,29 @@ export function diffArchitectures(
         ...adrDiff,
         ...controlsDiff,
         ...flowsDiff,
-        ...flowsDiff,
         ...metadataDiff,
+        invalidItems: {
+            nodes: nodesAndRelationshipsDiff.invalidItems?.nodes ?? [],
+            relationships: nodesAndRelationshipsDiff.invalidItems?.relationships ?? [],
+            flows: flowsDiff.invalidItems?.flows ?? [],
+        },
     };
 }
 
+/**
+ * Core diff function for CALM flow arrays. Flows are matched by `unique-id`
+ * and classified as added, removed, modified or unchanged. Items missing an
+ * ID are surfaced via `invalidItems` rather than silently dropped.
+ */
 export function diffFlows(flowsA: CalmFlowSchema[], flowsB: CalmFlowSchema[]): FlowDiffResult {
-    const flowsByIdA = new Map(flowsA.map((flow) => [flow['unique-id'], flow]));
-    const flowsByIdB = new Map(flowsB.map((flow) => [flow['unique-id'], flow]));
+    const validFlowsA = flowsA.filter((flow) => flow['unique-id']);
+    const validFlowsB = flowsB.filter((flow) => flow['unique-id']);
+    const invalidFlows = [
+        ...flowsA.filter((flow) => !flow['unique-id']),
+        ...flowsB.filter((flow) => !flow['unique-id']),
+    ];
+    const flowsByIdA = new Map(validFlowsA.map((flow) => [flow['unique-id'], flow]));
+    const flowsByIdB = new Map(validFlowsB.map((flow) => [flow['unique-id'], flow]));
     const flowsAdded = [...flowsByIdB.values()].filter((flow) => !flowsByIdA.has(flow['unique-id']));
     const flowsRemoved = [...flowsByIdA.values()].filter((flow) => !flowsByIdB.has(flow['unique-id']));
     const flowsModified: FlowChange[] = [];
@@ -199,7 +214,10 @@ export function diffFlows(flowsA: CalmFlowSchema[], flowsB: CalmFlowSchema[]): F
         }
     }
 
-    return { flowsAdded, flowsRemoved, flowsModified, flowsSame };
+    return {
+        flowsAdded, flowsRemoved, flowsModified, flowsSame,
+        invalidItems: { nodes: [], relationships: [], flows: invalidFlows },
+    };
 }
 
 /**

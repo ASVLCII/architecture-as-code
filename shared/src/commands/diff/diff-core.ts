@@ -1,10 +1,13 @@
 import {
+    type AdrDiffResult,
+    type ControlDiffResult,
     diffArchitectures,
     diffPatterns,
     diffTimelineAdjacent,
     diffTimelineMoments,
     type ArchitectureResolver,
     type FlowDiffResult,
+    type MetadataDiffResult,
     type MomentDiff,
     type NodesAndRelationshipsDiffResult,
     type TimelineInput,
@@ -16,15 +19,43 @@ export type DiffOutputFormat = 'json' | 'summary';
 
 export type DiffDocumentType = 'architecture' | 'pattern';
 
-type DiffResult = NodesAndRelationshipsDiffResult & Partial<FlowDiffResult>;
-
 export interface DiffRunResult {
     diff: DiffResult;
     formatted: string;
     hasChanges: boolean;
 }
 
+type DiffResult = NodesAndRelationshipsDiffResult & Partial<AdrDiffResult & ControlDiffResult & MetadataDiffResult & FlowDiffResult>;
+
+interface ArchitectureLevelChangeCounts {
+    adrs: { added: number; removed: number; unchanged: number };
+    controls: { added: number; removed: number; modified: number };
+    metadata: { added: number; removed: number; modified: number };
+}
+
+function architectureLevelChangeCounts(diff: DiffResult): ArchitectureLevelChangeCounts {
+    const adrItems = diff.adrDiffItems ?? [];
+    return {
+        adrs: {
+            added: adrItems.filter((item) => item.changeType === 'added').length,
+            removed: adrItems.filter((item) => item.changeType === 'removed').length,
+            unchanged: adrItems.filter((item) => item.changeType === 'unchanged').length,
+        },
+        controls: {
+            added: Object.keys(diff.controlItemsAdded ?? {}).length,
+            removed: Object.keys(diff.controlItemsRemoved ?? {}).length,
+            modified: Object.keys(diff.controlItemsModified ?? {}).length,
+        },
+        metadata: {
+            added: diff.metadataObjectsAdded?.length ?? 0,
+            removed: diff.metadataObjectsRemoved?.length ?? 0,
+            modified: diff.metadataObjectsModified?.length ?? 0,
+        },
+    };
+}
+
 export function hasChanges(diff: DiffResult): boolean {
+    const counts = architectureLevelChangeCounts(diff);
     return (
         diff.nodesAdded.length > 0 ||
         diff.nodesRemoved.length > 0 ||
@@ -37,6 +68,15 @@ export function hasChanges(diff: DiffResult): boolean {
         (diff.flowsAdded?.length ?? 0) > 0 ||
         (diff.flowsRemoved?.length ?? 0) > 0 ||
         (diff.flowsModified?.length ?? 0) > 0 ||
+        (diff.invalidItems?.flows?.length ?? 0) > 0 ||
+        counts.adrs.added > 0 ||
+        counts.adrs.removed > 0 ||
+        counts.controls.added > 0 ||
+        counts.controls.removed > 0 ||
+        counts.controls.modified > 0 ||
+        counts.metadata.added > 0 ||
+        counts.metadata.removed > 0 ||
+        counts.metadata.modified > 0 ||
         (diff.invalidItems?.nodes.length ?? 0) > 0 ||
         (diff.invalidItems?.relationships.length ?? 0) > 0 ||
         (diff.undiffableItems?.nodes.length ?? 0) > 0 ||
@@ -71,8 +111,10 @@ export function formatDiff(
     }
     const invalidNodes = diff.invalidItems?.nodes.length ?? 0;
     const invalidEdges = diff.invalidItems?.relationships.length ?? 0;
+    const invalidFlows = diff.invalidItems?.flows?.length ?? 0;
     const undiffableNodes = diff.undiffableItems?.nodes.length ?? 0;
     const undiffableEdges = diff.undiffableItems?.relationships.length ?? 0;
+    const counts = architectureLevelChangeCounts(diff);
     const title = `CALM ${documentType} diff`;
     const lines = [
         title,
@@ -83,8 +125,17 @@ export function formatDiff(
     if (diff.flowsAdded) {
         lines.push(`Flows:         +${diff.flowsAdded.length}  -${diff.flowsRemoved!.length}  ~${diff.flowsModified!.length}  =${diff.flowsSame!.length}`);
     }
-    if (invalidNodes + invalidEdges > 0) {
-        lines.push(`Invalid items: ${invalidNodes} node(s) + ${invalidEdges} relationship(s) skipped (missing unique-id)`);
+    if (counts.adrs.added + counts.adrs.removed > 0) {
+        lines.push(`ADRs:          +${counts.adrs.added}  -${counts.adrs.removed}  =${counts.adrs.unchanged}`);
+    }
+    if (counts.controls.added + counts.controls.removed + counts.controls.modified > 0) {
+        lines.push(`Controls:      +${counts.controls.added}  -${counts.controls.removed}  ~${counts.controls.modified}`);
+    }
+    if (counts.metadata.added + counts.metadata.removed + counts.metadata.modified > 0) {
+        lines.push(`Metadata:      +${counts.metadata.added}  -${counts.metadata.removed}  ~${counts.metadata.modified}`);
+    }
+    if (invalidNodes + invalidEdges + invalidFlows > 0) {
+        lines.push(`Invalid items: ${invalidNodes} node(s) + ${invalidEdges} relationship(s)${invalidFlows > 0 ? ` + ${invalidFlows} flow(s)` : ''} skipped (missing unique-id)`);
     }
     if (undiffableNodes + undiffableEdges > 0) {
         lines.push(`Undiffable items: ${undiffableNodes} node(s) + ${undiffableEdges} relationship(s) (no constrained unique-id to diff by)`);
@@ -107,6 +158,12 @@ export function formatDiff(
     list('Flows added:', diff.flowsAdded?.map((flow) => flow['unique-id']) ?? []);
     list('Flows removed:', diff.flowsRemoved?.map((flow) => flow['unique-id']) ?? []);
     list('Flows modified:', diff.flowsModified?.map((flow) => flow.original['unique-id']) ?? []);
+    const adrItems = diff.adrDiffItems ?? [];
+    list('ADRs added:', adrItems.filter((item) => item.changeType === 'added').map((item) => item.content));
+    list('ADRs removed:', adrItems.filter((item) => item.changeType === 'removed').map((item) => item.content));
+    list('Controls added:', Object.keys(diff.controlItemsAdded ?? {}));
+    list('Controls removed:', Object.keys(diff.controlItemsRemoved ?? {}));
+    list('Controls modified:', Object.keys(diff.controlItemsModified ?? {}));
     return lines.join('\n');
 }
 
@@ -217,9 +274,10 @@ export function diffDocuments(
 
     const invalidNodeCount = diff.invalidItems?.nodes.length ?? 0;
     const invalidEdgeCount = diff.invalidItems?.relationships.length ?? 0;
-    if (invalidNodeCount + invalidEdgeCount > 0) {
+    const invalidFlowCount = diff.invalidItems?.flows?.length ?? 0;
+    if (invalidNodeCount + invalidEdgeCount + invalidFlowCount > 0) {
         logger.warn(
-            `Skipped ${invalidNodeCount} node(s) and ${invalidEdgeCount} relationship(s) ` +
+            `Skipped ${invalidNodeCount} node(s) and ${invalidEdgeCount} relationship(s)${invalidFlowCount > 0 ? ` and ${invalidFlowCount} flow(s)` : ''} ` +
                 'because they were missing a unique-id. These items are reported under ' +
                 'invalidItems and contribute to hasChanges so --exit-code does not pass on them silently.',
         );

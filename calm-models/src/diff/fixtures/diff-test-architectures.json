@@ -29,7 +29,7 @@
       {
         "unique-id": "read-flow",
         "name": "Read flow",
-        "description": "Writes a record.",
+        "description": "Reads a record.",
         "transitions": [
           { "relationship-unique-id": "gateway-to-payment", "sequence-number": 1, "description": "Write." }
         ]
@@ -1040,5 +1040,20 @@
     ],
     "nodes": [],
     "relationships": []
+  },
+  "flowTwoMissingIdsArchitecture": {
+    "nodes": [],
+    "relationships": [],
+    "flows": [
+      { "name": "Write flow", "description": "Writes a record.", "transitions": [] },
+      { "name": "Write flow", "description": "Writes a record.", "transitions": [] }
+    ]
+  },
+  "flowOneMissingIdArchitecture": {
+    "nodes": [],
+    "relationships": [],
+    "flows": [
+      { "name": "Write flow", "description": "Writes a record.", "transitions": [] }
+    ]
   }
 }
