@@ -1,0 +1,49 @@
+# Copyright 2026 ASVLCII
+# SPDX-License-Identifier: Apache-2.0
+name: PR 3046 isolated verification
+on:
+  push:
+    branches: ['verify/pr3046-20261029']
+permissions:
+  contents: read
+jobs:
+  typescript:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 868fdbcb530cf693433cfb90c6af11965e6d652a
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version-file: '.nvmrc'
+      - run: npm ci --no-audit --no-fund
+      - name: Build affected dependency chain
+        run: npm run build:cli
+      - name: Focused flow regressions
+        run: |
+          npm test --workspace calm-models -- src/diff/diff.spec.ts
+          npm test --workspace shared -- src/commands/diff/diff.spec.ts
+          npm test --workspace cli -- src/cli.e2e.spec.ts
+          npm test --workspace calm-lab -- src/cli/diff.spec.ts
+      - name: Build all workspaces
+        run: npm run build
+      - name: Full workspace tests with coverage
+        run: npm test -- --coverage
+      - name: Lint all workspaces
+        run: npm run lint
+      - name: Typecheck learning lab
+        run: npm run typecheck --workspace calm-lab
+  java:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 868fdbcb530cf693433cfb90c6af11965e6d652a
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: ./mvnw --batch-mode clean install
+      - run: ./mvnw --batch-mode -pl calm-hub verify
