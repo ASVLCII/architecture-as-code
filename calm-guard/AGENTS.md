@@ -10,7 +10,7 @@ Built for the DTCC/FINOS Innovate.DTCC AI Hackathon (Feb 23-27, 2026).
 
 | Layer | Choice | Notes |
 |-------|--------|-------|
-| Framework | Next.js 15 (App Router, Turbopack) | `src/app/` routing, API routes for SSE |
+| Framework | Next.js 16 (App Router, Turbopack) | `src/app/` routing, API routes for SSE |
 | Package Manager | npm (workspaces) | CalmGuard is a workspace of the monorepo root. Run `npm` commands from the repo root or use `--workspace=calmguard`. The docs sub-package is `calmguard-docs`. |
 | Language | TypeScript (strict mode) | No `any` types. Use Zod for runtime validation |
 | LLM SDK | Vercel AI SDK (`ai`) | `generateObject` with Zod schemas for all agent outputs |
@@ -187,7 +187,7 @@ OPENAI_API_KEY=                 # OpenAI (optional)
 
 ## Important References
 
-- CALM Schema 1.2: https://github.com/finos/architecture-as-code/tree/main/calm/release/1.2
+- CALM Schema 1.2: https://github.com/finos/calm-schema/tree/v1.2/schema
 - CALM CLI: https://github.com/finos/architecture-as-code/tree/main/cli
 - CALM AI module: https://github.com/finos/architecture-as-code/tree/main/calm-ai
 - Vercel AI SDK: https://sdk.vercel.ai/docs
@@ -196,7 +196,6 @@ OPENAI_API_KEY=                 # OpenAI (optional)
 
 ## Git Workflow
 
-- Always commit with `git commit -s` (signs off with user's identity via DCO)
 - Claude should commit on the user's behalf — do not defer commits to the user
 
 ## Learnings

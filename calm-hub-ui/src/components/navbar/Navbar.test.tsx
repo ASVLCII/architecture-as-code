@@ -7,6 +7,8 @@ import { UserAccessContext } from '../../admin/context/UserAccessContext.js';
 import { CurrentUserAccessState } from '../../admin/hooks/useCurrentUserAccess.js';
 import { createMemoryStorage } from '../../test-support/memory-storage.js';
 import { THEME_STORAGE_KEY } from '../../theme/useTheme.js';
+import { UiConfigContext } from '../ui-config/UiConfigContext.js';
+import { UiConfig } from '../../model/ui-config.js';
 
 function makeState(overrides: Partial<CurrentUserAccessState>): CurrentUserAccessState {
     return {
@@ -19,12 +21,14 @@ function makeState(overrides: Partial<CurrentUserAccessState>): CurrentUserAcces
     };
 }
 
-function renderNavbar(state: CurrentUserAccessState, storage: Storage = createMemoryStorage()) {
+function renderNavbar(state: CurrentUserAccessState, storage: Storage = createMemoryStorage(), uiConfig: UiConfig = {}) {
     return render(
         <UserAccessContext.Provider value={state}>
-            <MemoryRouter>
-                <Navbar storage={storage} />
-            </MemoryRouter>
+            <UiConfigContext.Provider value={uiConfig}>
+                <MemoryRouter>
+                    <Navbar storage={storage} />
+                </MemoryRouter>
+            </UiConfigContext.Provider>
         </UserAccessContext.Provider>
     );
 }
@@ -140,5 +144,53 @@ describe('Navbar theme', () => {
         // Guards against Navbar and ThemeToggle each holding their own useTheme state.
         expect(screen.getByAltText('CALM Logo').getAttribute('src')).toContain('WHT');
         expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+    });
+});
+
+describe('Navbar UI config', () => {
+    it('shows no environment pill or menu info when nothing is configured', async () => {
+        renderNavbar(makeState({}));
+        await userEvent.click(screen.getByRole('button', { name: /open menu/i }));
+        expect(screen.queryByTestId('environment-pill')).not.toBeInTheDocument();
+        expect(screen.queryByText('Signed in as')).not.toBeInTheDocument();
+    });
+
+    it('shows the environment pill in the header without opening the menu', () => {
+        renderNavbar(makeState({}), createMemoryStorage(), { environment: { name: 'UAT', colour: 'warning' } });
+        expect(screen.getByTestId('environment-pill')).toHaveTextContent('UAT');
+        expect(screen.getByRole('dialog', { hidden: true })).toHaveAttribute('aria-hidden', 'true');
+    });
+
+    it('shows the identity and items in the open menu', async () => {
+        renderNavbar(makeState({}), createMemoryStorage(), {
+            identity: { name: 'alice' },
+            items: [{ label: 'Support', url: 'https://support.example.com' }],
+        });
+        await userEvent.click(screen.getByRole('button', { name: /open menu/i }));
+        const menu = screen.getByRole('dialog');
+        expect(menu).toHaveTextContent('Signed in as');
+        expect(menu).toHaveTextContent('alice');
+        expect(screen.getByRole('link', { name: 'Support' })).toHaveAttribute('href', 'https://support.example.com');
+    });
+});
+
+// jsdom does no layout, so these guard the classes that set it (#3505).
+describe('Navbar layout', () => {
+    it('keeps the logo in the flex flow below lg, so page actions cannot cover it', () => {
+        renderNavbar(makeState({}));
+        const center = screen.getByRole('link', { name: 'CALM Hub home' }).parentElement;
+
+        expect(center).not.toHaveClass('absolute');
+        expect(center).toHaveClass('lg:absolute', 'max-lg:shrink', 'min-w-0');
+        expect(screen.getByAltText('CALM Logo')).toHaveClass('object-contain');
+    });
+
+    it('stops the side groups shrinking under their content below lg', () => {
+        const { container } = renderNavbar(makeState({}));
+
+        for (const side of [container.querySelector('.navbar-start'), container.querySelector('.navbar-end')]) {
+            expect(side).toHaveClass('max-lg:w-auto', 'max-lg:flex-1', 'lg:min-w-0');
+            expect(side).not.toHaveClass('min-w-0');
+        }
     });
 });

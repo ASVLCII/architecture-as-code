@@ -44,7 +44,7 @@ calm-server/
 npm run build:calm-server
 ```
 
-This builds the TypeScript code and copies the CALM meta schemas into `dist/calm/`. Released versions come from the `@finos/calm-schema` npm packages that the root `package.json` pins (copied by `scripts/copy-calm-schemas.mjs`). Release candidates and drafts still come from `calm/release` and `calm/draft`.
+This builds the TypeScript code and copies the CALM meta schemas into `dist/calm/`. Released versions come from the `@finos/calm-schema` npm packages that the root `package.json` pins (copied by `scripts/copy-calm-schemas.mjs`).
 
 ### Run the server locally
 ```bash
@@ -52,7 +52,7 @@ This builds the TypeScript code and copies the CALM meta schemas into `dist/calm
 ./calm-server/dist/index.js --port 3000 --verbose
 
 # Or with custom schemas
-./calm-server/dist/index.js -s ../calm/release --port 3000 --verbose
+./calm-server/dist/index.js -s path/to/schemas --port 3000 --verbose
 
 # Or using npm
 npm run build:calm-server
@@ -168,6 +168,12 @@ The tsup configuration:
 - Adds Node.js shebang via banner for executable
 - Outputs CommonJS format with tree-shaking enabled
 - Marks external `node_modules` as external (not bundled)
+
+### Releases
+
+The **CALM Server - Automated Release** workflow releases with semantic-release. `release.config.mjs`
+lists the scopes that release the server: `calm-server` and the packages that the build bundles. The
+rules and the changelog format are shared with the CLI, in `scripts/release-notes.mjs`.
 
 ## Linking for Development
 

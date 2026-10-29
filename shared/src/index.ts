@@ -12,7 +12,6 @@ registerOutputFormatter('junit', junitFormatter);
 export {
     validate,
     formatOutput as getFormattedOutput,
-    exitBasedOffOfValidationOutcome,
     ValidationFormattingOptions,
     ValidationDocumentContext,
 } from './commands/validate/validate.js';
@@ -68,7 +67,7 @@ export { ValidationOutcome } from './commands/validate/validation.output.js';
 export { setWidgetLogger, type WidgetLogger } from '@finos/calm-widgets';
 export { DocumentLoader, DocumentLoaderOptions, DocumentLoadError, assertJsonObject, CALM_HUB_PROTOS } from './document-loader/document-loader.js';
 export { buildDocumentLoader } from './document-loader/node-document-loader.js';
-export { FileSystemDocumentLoader } from './document-loader/file-system-document-loader.js';
+export { FileSystemDocumentLoader, isLocalPath, isRelativePath } from './document-loader/file-system-document-loader.js';
 export { WorkspaceDocumentLoader } from './document-loader/workspace-document-loader.js';
 export {
     classifyWorkspaceDocumentType,
@@ -101,6 +100,10 @@ export {
     constructDocumentId,
     isConformantDocumentId,
     namespaceFromDocumentId,
+    resourceTypeFromDocumentId,
+    isControlDocumentId,
+    documentNameField,
+    documentName,
     extractDocumentMetadata,
     updateDocumentMetadata,
     type DocumentMetadata,
@@ -110,8 +113,30 @@ export {
     type ControlDocumentMetadata,
     type ControlDocumentKind
 } from './hub/document-id-utils.js';
-export { computeSemVerBump, compareSemVer, sortSemVer } from './hub/semver.js';
+export {
+    computeSemVerBump,
+    compareSemVer,
+    sortSemVer,
+    isSnapshotVersion,
+    latestReleaseVersion,
+    toSnapshotVersion,
+    toReleaseVersion,
+    SNAPSHOT_SUFFIX
+} from './hub/semver.js';
 export { canonicalEqual, canonicalize } from './hub/canonical.js';
+export {
+    isCurie,
+    parseCurie,
+    expandCurie,
+    type CurieComponents,
+} from './hub/curie.js';
+export { CurieReferenceResolver } from './resolver/curie-resolver.js';
+export { LocalCurieReferenceResolver } from './resolver/local-curie-resolver.js';
+export { ShaCacheReferenceResolver } from './resolver/sha-cache-resolver.js';
+export { ChainReferenceResolver } from './resolver/chain-reference-resolver.js';
+export { type CalmReferenceResolver, HttpReferenceResolver } from './resolver/calm-reference-resolver.js';
+export { SchemaDirectoryReferenceResolver } from './resolver/schema-directory-reference-resolver.js';
+export { mergeControls } from './controls/merge-controls.js';
 export {
     enrichWithDocumentPositions,
     parseDocumentWithPositions,

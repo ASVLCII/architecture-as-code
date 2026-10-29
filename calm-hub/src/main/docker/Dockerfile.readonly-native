@@ -20,14 +20,14 @@
 #                     read-only runtime image needs.  The resulting calmSchemas.db
 #                     is architecture-neutral (pure-Java H2 MVStore format).
 #
-#   Stage 2 (final) — ubi9/ubi-minimal (no JDK); copies only the native runner and
+#   Stage 2 (final) — distroless/cc-debian12 (no JDK, no shell); copies only the native runner and
 #                     the seeded .db.
 #
 # Prerequisites (handled by build-readonly-native-image.sh):
 #   • calm-hub Maven native build:
 #       ./mvnw package -Dnative -Dquarkus.native.container-build=true -DskipITs
 #     → target/*-runner (native binary) and target/quarkus-app/ (JVM app) populated
-#   • calm/ schemas staged:   target/readonly-seed/calm/
+#   • released meta-schemas:  target/readonly-seed/calm-schemas/release/
 #   • controls staged:        target/readonly-seed/controls/
 #
 # Build (from calm-hub/ directory):
@@ -58,11 +58,12 @@ COPY nitrite/seed-readonly.sh /nitrite/seed-readonly.sh
 COPY nitrite/init-nitrite.sh  /nitrite/init-nitrite.sh
 RUN chmod +x /nitrite/seed-readonly.sh /nitrite/init-nitrite.sh
 
-# CALM schema content, controls, standards and patterns staged by the build script into target/readonly-seed/
-COPY target/readonly-seed/calm/     /calm/
+# Controls, standards, patterns, released meta-schemas and interfaces staged by the build script into target/readonly-seed/
 COPY target/readonly-seed/controls/ /controls/
 COPY target/readonly-seed/standards/ /standards/
 COPY target/readonly-seed/patterns/ /patterns/
+COPY target/readonly-seed/calm-schemas/ /calm-schemas/
+COPY target/readonly-seed/interfaces/ /interfaces/
 
 # Boot calm-hub (writable standalone, JVM mode), seed all content, stop gracefully.
 # CALM_HUB_NATIVE_BINARY is intentionally left unset so seed-readonly.sh launches
@@ -73,10 +74,11 @@ COPY target/readonly-seed/patterns/ /patterns/
 # 0444 to the parent directory, stripping the execute bit and making the
 # directory non-traversable at runtime).
 RUN DATA_DIR=/data \
-    CALM_SCHEMA_BASE_PATH=/calm \
     CALM_CONTROLS_BASE_PATH=/controls \
     CALM_STANDARDS_BASE_PATH=/standards \
     CALM_PATTERNS_BASE_PATH=/patterns \
+    CALM_RELEASE_SCHEMA_PATH=/calm-schemas/release \
+    CALM_INTERFACES_BASE_PATH=/interfaces \
     bash /nitrite/seed-readonly.sh \
     && chmod 0444 /data/calmSchemas.db
 
@@ -120,5 +122,10 @@ ENV CALM_STANDALONE_DATA_DIRECTORY=/deployments/data
 
 # Read-only mode: opens NitriteDB with readOnly(true) and rejects mutating HTTP verbs
 ENV CALM_READONLY=true
+
+# Base of the $id of each name-based document (/calm/namespaces/...). The seeded
+# documents belong to hub.calm.finos.org. To serve them from a different URL,
+# set CALM_HUB_BASE_URL when you run the image.
+ENV CALM_HUB_BASE_URL=https://hub.calm.finos.org
 
 ENTRYPOINT ["/deployments/calm-hub-runner", "-Dquarkus.http.host=0.0.0.0"]

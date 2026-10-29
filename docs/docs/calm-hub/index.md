@@ -83,14 +83,16 @@ curl -s -o /dev/null -w "%{http_code}" \
 # → 405
 ```
 
+The read-only images serve the `$id` of each name-based document under `https://hub.calm.finos.org`, because the seeded documents belong to that Hub. To use a different base, add `-e CALM_HUB_BASE_URL=<url>` to `docker run`.
+
 ### How the Read-Only Data Image Layer Works
 
 The read-only images use a **two-stage Docker build** to pre-seed the embedded NitriteDB with the full CALM schema dataset at *build time*:
 
 ```
 Stage 1 — seed (JVM, writable)
-  FROM ubi9/openjdk-21
-  COPY quarkus-app/ and calm/ schemas + controls/
+  FROM ubi8/openjdk-21 (static) or ubi9/openjdk-21 (native)
+  COPY quarkus-app/ + released meta-schemas (npm copy) + controls/ + interfaces/
   RUN boot Quarkus in standalone (writable) mode
       → init script POSTs all schemas and controls into NitriteDB
       → graceful SIGTERM flushes and commits the database
@@ -101,11 +103,40 @@ Stage 2 — runtime (minimal base image)
   chmod 0444                              ← immutable at filesystem level
   ENV CALM_READONLY=true
   ENV QUARKUS_PROFILE=standalone
+  ENV CALM_HUB_BASE_URL=https://hub.calm.finos.org
 ```
 
 The resulting image carries the seeded database as a read-only filesystem layer. At runtime the process opens the file in read-only mode, serves the pre-loaded content, and rejects all write requests.
 
 **Why the native read-only image uses a JVM for seeding:** GraalVM native binaries compiled from NitriteDB cannot reliably *write* (commit) the H2 MVStore backing file due to Java serialisation requirements that are not fully supported in native mode. The JVM seed stage produces a database file that the native binary can then *read* correctly (via registered serialisation metadata). The native runtime is only ever used for reads in the read-only image.
+
+---
+
+## UI Customization
+
+An operator can add deployment-specific information to CALM Hub UI with configuration only. Each `calm.ui.*` property can also be set as an environment variable.
+
+| Item | Where it shows | Properties |
+|:-----|:---------------|:-----------|
+| Environment pill | Header, on every page | `calm.ui.environment.name`, `calm.ui.environment.colour` |
+| Signed-in identity | Hamburger menu | `calm.ui.identity.enabled`, `calm.ui.identity.show-roles` |
+| Values and links | Hamburger menu | `calm.ui.items[n].label`, `.value`, `.url` |
+
+```bash
+CALM_UI_ENVIRONMENT_NAME=UAT
+CALM_UI_ENVIRONMENT_COLOUR=warning        # info | success | warning | error | neutral | #rrggbb
+CALM_UI_IDENTITY_ENABLED=true             # shows the principal name that CALM Hub sees
+CALM_UI_ITEMS_0__LABEL=Support
+CALM_UI_ITEMS_0__URL=https://support.example.com
+CALM_UI_ITEMS_1__LABEL=Build
+CALM_UI_ITEMS_1__VALUE=2026.10.1
+```
+
+- Each item needs a `label` and a `value`, a `url`, or both. With both, the `value` is the link text.
+- Use a short environment name, for example `DEV`, `QA` or `PROD`. On narrow screens the UI truncates long names.
+- CALM Hub does not start if a colour or URL is not valid. URLs must be absolute `http` or `https` URLs.
+- Identity and roles are off by default. Turn on `show-roles` only if your role names are safe to show to users.
+- The UI gets these values from `GET /api/calm/ui/config`, which requires authentication.
 
 ---
 

@@ -181,7 +181,7 @@ graph TB
 
 | Layer | Technology | Purpose |
 |-------|-----------|---------|
-| **Framework** | Next.js 15 (App Router) | Full-stack React with API routes |
+| **Framework** | Next.js 16 (App Router) | Full-stack React with API routes |
 | **Language** | TypeScript (strict) | Type-safe codebase, zero `any` |
 | **AI** | Vercel AI SDK | Structured output via `generateObject` + Zod |
 | **LLM Providers** | Gemini, Claude, GPT, Grok | Multi-provider with configurable default |
@@ -419,14 +419,14 @@ Full documentation is available in [`docs/`](docs/). Run locally with `npm run d
 
 ## Contributing
 
-We welcome contributions! See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for:
+We welcome contributions! See [CONTRIBUTING.md](docs/docs/contributing.md) for:
 
 - Development setup and workflow
 - Branch naming and commit conventions (Conventional Commits)
 - CI pipeline requirements
 - Code standards (TypeScript strict, Zod schemas, dark theme)
 
-All commits must include a **DCO sign-off** (`git commit -s`).
+All pull requests need a signed FINOS **Contributor License Agreement (CLA)**. The EasyCLA bot comments on your first pull request with a link to sign it.
 
 ## Roadmap — Path to Enterprise
 

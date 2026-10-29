@@ -9,6 +9,7 @@ import { DomainPage } from './components/domain-page/DomainPage.js';
 import { IntroScreen } from './components/intro-screen/IntroScreen.js';
 import { SearchResultsPage } from './components/search-results/SearchResultsPage.js';
 import { useResourceFromRoute } from './hooks/useResourceFromRoute.js';
+import { useResourceNavigationKey } from './hooks/useResourceNavigationKey.js';
 import { useIsMobile } from '../hooks/useMediaQuery.js';
 import { BreadcrumbItem, Data, Adr } from '../model/calm.js';
 import { ControlData } from '../model/control.js';
@@ -123,11 +124,13 @@ export default function Hub() {
     }, [countsService]);
 
     // The mobile drill-down overlay defaults open and would otherwise cover the
-    // results on /search. Close it on route entry (a layout effect, so a direct
+    // results on /search. Close it on route entry (during render, so a direct
     // mobile /search load doesn't flash the overlay); the Explore bar can reopen it.
-    useLayoutEffect(() => {
+    const [wasSearchRoute, setWasSearchRoute] = useState(false);
+    if (isSearchRoute !== wasSearchRoute) {
+        setWasSearchRoute(isSearchRoute);
         if (isSearchRoute) setIsMobileNavOpen(false);
-    }, [isSearchRoute]);
+    }
 
     useEffect(() => {
         return authStore.subscribe((status) => {
@@ -144,16 +147,42 @@ export default function Hub() {
     // Every navigation clears any loaded resource so the incoming route decides what
     // renders. Every resource load now comes from the route, so a stale control or
     // interface would otherwise flash before the new fetch resolves (detailContent
-    // evaluates controlData first). Runs in a layout effect so the clear happens
-    // before paint, avoiding a one-frame flash of the stale panel.
-    useLayoutEffect(() => {
+    // evaluates controlData first). The clear happens during render, so a stale panel
+    // never paints. A change to the query only, such as a diagram tab, keeps the
+    // resource (useResourceNavigationKey).
+    const resourceKey = useResourceNavigationKey(location, resourceLoadFailed);
+    const [clearedForKey, setClearedForKey] = useState(resourceKey);
+    if (resourceKey !== clearedForKey) {
+        setClearedForKey(resourceKey);
         setData(undefined);
         setAdrData(undefined);
         setControlData(undefined);
         setInterfaceData(undefined);
-        setSelectedItem(null);
         setResourceLoadFailed(false);
-    }, [location.key]);
+    }
+
+    // Any navigation, a tab change included, closes the node details panel, except the one that
+    // handleItemSelect makes to take `node` out of the URL.
+    const [nodeRemovedFromUrl, setNodeRemovedFromUrl] = useState<string | null>(null);
+    const [selectionLocation, setSelectionLocation] = useState({ key: location.key, search: location.search });
+    if (selectionLocation.key !== location.key || selectionLocation.search !== location.search) {
+        setSelectionLocation({ key: location.key, search: location.search });
+        setNodeRemovedFromUrl(null);
+        if (nodeRemovedFromUrl !== location.search) setSelectedItem(null);
+    }
+
+    // A link can name a node to open: `#/ns/architectures/1/1.0.0?node=client-ledger`. This comes after
+    // the clear above, so a link to another node replaces the cleared selection.
+    const linkedNodeId = new URLSearchParams(location.search).get('node');
+    const [linkSource, setLinkSource] = useState({ data, linkedNodeId, key: location.key });
+    if (linkSource.data !== data || linkSource.linkedNodeId !== linkedNodeId || linkSource.key !== location.key) {
+        setLinkSource({ data, linkedNodeId, key: location.key });
+        const nodes = (data?.data as { nodes?: unknown } | undefined)?.nodes;
+        const node = linkedNodeId && Array.isArray(nodes)
+            ? (nodes as CalmNodeSchema[]).find((n) => n['unique-id'] === linkedNodeId)
+            : undefined;
+        if (node) setSelectedItem({ data: node });
+    }
 
     const handleDataLoad = useCallback((loaded: Data) => {
         setData(loaded);
@@ -199,6 +228,7 @@ export default function Hub() {
 
     // Single owner of deep-link / external-navigation loading for the detail route.
     useResourceFromRoute({
+        resourceKey,
         onDataLoad: handleDataLoad,
         onAdrLoad: handleAdrLoad,
         onControlLoad: handleControlLoad,
@@ -206,13 +236,32 @@ export default function Hub() {
         onLoadError: handleResourceLoadError,
     });
 
-    const handleItemSelect = useCallback((item: SelectedItem) => {
-        setSelectedItem(item);
-    }, []);
+    // handleItemSelect must stay stable, because the diagram lays out its nodes again when its click handler
+    // changes. A layout effect, so a click just after a navigation reads the new location.
+    const locationRef = useRef(location);
+    useLayoutEffect(() => {
+        locationRef.current = location;
+    });
 
-    const closeSidebar = useCallback(() => {
-        setSelectedItem(null);
-    }, []);
+    // When the user selects another item or closes the panel, the URL stops naming the linked node, so a
+    // copied link or a reload does not open it again.
+    const handleItemSelect = useCallback(
+        (item: SelectedItem) => {
+            setSelectedItem(item);
+            const { pathname, search, hash, state } = locationRef.current;
+            const params = new URLSearchParams(search);
+            const linked = params.get('node');
+            if (!linked || item?.data['unique-id'] === linked) return;
+            params.delete('node');
+            const query = params.toString();
+            const nextSearch = query ? `?${query}` : '';
+            setNodeRemovedFromUrl(nextSearch);
+            navigate({ pathname, search: nextSearch, hash }, { replace: true, state });
+        },
+        [navigate]
+    );
+
+    const closeSidebar = useCallback(() => handleItemSelect(null), [handleItemSelect]);
 
     // The resource's display name is fetched by DiagramSection (it owns the
     // summaries fetch) and mirrored here so the crumb pushed on navigation can
@@ -284,7 +333,7 @@ export default function Hub() {
     // each render regardless, so memoising this buys no referential stability.
     const stepToNode = (index: number) => {
         const node = diagramNodes[index];
-        if (node) setSelectedItem({ data: node });
+        if (node) handleItemSelect({ data: node });
     };
 
     const onPrevNode = selectedNodeIndex > 0 ? () => stepToNode(selectedNodeIndex - 1) : undefined;

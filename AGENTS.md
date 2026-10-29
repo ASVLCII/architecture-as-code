@@ -23,15 +23,30 @@
 
 ## Project Overview
 
-This is the **FINOS Architecture as Code** monorepo containing the Common Architecture Language Model (CALM) specification and associated tools.
+This is the **FINOS Architecture as Code** monorepo. It holds the tools for the Common Architecture Language Model (CALM). The CALM schema lives in finos/calm-schema and the governance documents in finos/calm-governance (see [Project Repositories](#project-repositories)).
 
 **CALM** is a declarative, JSON-based modeling language for describing complex software architectures, particularly in regulated environments like financial services.
+
+## Project Repositories
+
+| Repository | Owns | Send here |
+|---|---|---|
+| [architecture-as-code](https://github.com/finos/architecture-as-code) | This repository: the tools, the docs site and CALM Lab. The tools get the schema from the `@finos/calm-schema` npm package (see [CALM Schema Updates](#calm-schema-updates)) | Tool changes, the documentation site, examples that the tools use |
+| [calm-schema](https://github.com/finos/calm-schema) | The CALM Meta Schema, its tests and `CHANGELOG.md`, the interface definitions. Published to npm and to `calm.finos.org` | Schema changes, schema releases, interface definitions. Do not change a schema here: `calm/` holds only CALM's own architecture and the 2026-03 draft, which [#3533](https://github.com/finos/architecture-as-code/issues/3533) deletes |
+| [calm-governance](https://github.com/finos/calm-governance) | Project-wide governance, the Maintainer roster, contribution guidelines, the Code of Conduct. No code | Governance and roster changes |
+
+Clone the three repositories side by side, with the same parent directory. Start the agent here and
+add the other two as additional directories. Each repository has its own `AGENTS.md`; read the one
+for the repository you change. Target commands at the correct repository: `git -C ../calm-schema ...`
+and `gh ... --repo finos/calm-schema`. Each repository is a fork clone: `origin` is the contributor's
+fork and `upstream` is the FINOS repository. Branch from `upstream/main` and open pull requests
+against `finos/<repo>`.
 
 ## Monorepo Structure
 
 ```
 architecture-as-code/
-├── calm/                      # CALM specification (JSON schemas)
+├── calm/                      # CALM's own architecture and the 2026-03 schema draft
 ├── cli/                       # TypeScript CLI (@finos/calm-cli)
 ├── calm-hub/                  # Java/Quarkus REST API backend
 ├── calm-hub-ui/               # React frontend for CALM Hub
@@ -71,7 +86,7 @@ from inside these folders.
   tested with vitest, managed as npm workspaces off a single root lockfile
   (see [Lockfile Regeneration](#lockfile-regeneration)).
 - **Java/Maven** — the root `pom.xml` is a reactor over six modules. Two carry Java code: `calm-hub`
-  (Quarkus 3.34+, MongoDB/NitriteDB, TestContainers) and `calm-models` (a plain jar). `cli`, `calm`,
+  (Quarkus LTS releases only, MongoDB/NitriteDB, TestContainers) and `calm-models` (a plain jar). `cli`, `calm`,
   `docs` and `shared` are POM-only placeholders. Note that `calm-models` is built by both toolchains
   — it is an npm workspace *and* a Maven module.
 - **Documentation** — Docusaurus, both for the main site and CALMGuard's `calmguard-docs`.
@@ -150,7 +165,6 @@ platforms' packages from the lockfile. If your PR does not update the schema, re
 
 Read the guide for a package before working on its code, tests, or build.
 
-- **[calm/AGENTS.md](calm/AGENTS.md)** - CALM JSON Meta Schema, schema change workflow, draft/release rules
 - **[cli/AGENTS.md](cli/AGENTS.md)** - CLI commands, build pipeline, Commander.js patterns
 - **[calm-hub/AGENTS.md](calm-hub/AGENTS.md)** - Java/Quarkus backend, storage modes, security
 - **[calm-hub-ui/AGENTS.md](calm-hub-ui/AGENTS.md)** - React frontend, service patterns, component conventions
@@ -201,6 +215,10 @@ Always build dependencies before dependent packages. The Maven reactor works thi
 `calm-lab` consumes the compiled `@finos/calm-shared/browser` entry, so `shared` must be built
 first — `npm run build:calm-lab` chains the whole order for you.
 
+The root `npm run build` builds the workspaces in the order of the `workspaces` list in
+`package.json`, not in dependency order. `docs` must stay after `calm-studio/packages/*`, because
+it loads the built `@finos/calm-docusaurus-plugin`, which loads the built `@calmstudio/diagram`.
+
 ## Testing
 
 **IMPORTANT**: All workspaces use `vitest run` for the test script, which runs tests once and exits.
@@ -230,15 +248,20 @@ time. Format is `<type>(<scope>): <subject>`, subject with no trailing period.
 
 - **type** (required, lowercase): `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`,
   `perf`, `ci`, `build`, `revert`
-- **scope** (optional but preferred): `cli`, `shared`, `calm-widgets`, `calm-hub`, `calm-hub-ui`,
-  `docs`, `vscode`, `deps`, `ci`, `release`
+- **scope** (optional but preferred): `cli`, `shared`, `calm-models`, `calm-ai`, `calm-widgets`,
+  `calm-server`, `calm-hub`, `calm-hub-ui`, `docs`, `vscode`, `deps`, `ci`, `release`
 
 Run `npm run commit` for an interactive prompt. Stage your changes first.
 
-Type and scope drive the automated release, so neither is cosmetic: `cli/.releaserc.json` releases
+Type and scope drive the automated release, so neither is cosmetic: `cli/release.config.mjs` releases
 on the `cli`, `shared`, `calm-models`, `calm-ai` and `calm-widgets` scopes, and its fallback rule
-also releases any *unscoped* `feat`, `fix`, `perf` or `revert`. Check that file before assuming a
-commit is release-neutral.
+also releases any *unscoped* `feat`, `fix`, `perf` or `revert`. `calm-server/release.config.mjs`
+does the same for its own scopes. The VS Code extension releases on the changes that touched
+`calm-plugins/vscode`, whatever their scope (see
+[calm-plugins/vscode/AGENTS.md](calm-plugins/vscode/AGENTS.md#releasing)). Check these files before
+assuming a commit is release-neutral. A
+merged PR with a conventional title is released on its title alone, so give the PR the type and scope
+of its most significant change. A plain `git revert` does not release.
 
 ## Pre-Commit Checklist
 

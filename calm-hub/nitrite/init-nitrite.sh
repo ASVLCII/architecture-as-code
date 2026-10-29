@@ -8,12 +8,14 @@ set -e
 
 # Configuration
 CALM_HUB_URL="${CALM_HUB_URL:-http://localhost:8080}"
-# Base URL used to build document $id values for the name-based API. Must equal
-# the server's calm.hub.base-url config property (default http://localhost:8080),
-# which is not necessarily the URL this script reaches the hub on.
-CALM_HUB_BASE_URL="${CALM_HUB_BASE_URL:-$CALM_HUB_URL}"
-CALM_SCHEMA_BASE_PATH="${CALM_SCHEMA_BASE_PATH:-}"
+# Do not default CALM_HUB_BASE_URL here. -u/--url is parsed later, and the
+# name-based $id base must follow that URL unless the caller already set
+# CALM_HUB_BASE_URL or passed --base-url. resolve_calm_hub_base_url runs after
+# argument parsing. The value must equal the server's calm.hub.base-url, which
+# is not necessarily the URL this script uses to reach the hub.
+CALM_RELEASE_SCHEMA_PATH="${CALM_RELEASE_SCHEMA_PATH:-}"
 CALM_CONTROLS_BASE_PATH="${CALM_CONTROLS_BASE_PATH:-}"
+CALM_INTERFACES_BASE_PATH="${CALM_INTERFACES_BASE_PATH:-}"
 CALM_STANDARDS_BASE_PATH="${CALM_STANDARDS_BASE_PATH:-}"
 CALM_PATTERNS_BASE_PATH="${CALM_PATTERNS_BASE_PATH:-}"
 CONTENT_TYPE="Content-Type: application/json"
@@ -73,23 +75,22 @@ create_namespaces() {
     print_status "Creating namespaces..."
     
     # Create required namespaces (the API requires both a name and a description)
-    for namespace in finos finos.calm finos.traderx workshop finos.fluxnova finos.sdlc-common-controls finos.agentic-sdlc; do
+    for namespace in finos finos.calm finos.traderx workshop finos.fluxnova finos.sdlc-common-controls; do
         print_status "Creating namespace: $namespace"
         local description
         case "$namespace" in
             # Keep in sync with the namespace descriptions in calm-hub/mongo/init-mongo.js
             finos.fluxnova) description="FluxNova BPM example architectures" ;;
             finos.sdlc-common-controls) description="The Standard the SDLC Common Controls Catalog control requirements conform to" ;;
-            finos.agentic-sdlc) description="Agentic SDLC Blueprint: the pattern and Standards that enforce the SDLC Common Controls on its estate" ;;
             *) description="$namespace namespace" ;;
         esac
         create_namespace "$namespace" "$description" || true
     done
 }
 
-# Function to load schemas from a directory (release or draft)
+# Function to load schemas from a directory
 # Usage: load_schemas_from_dir <base_dir> <prefix>
-# e.g. load_schemas_from_dir /calm/release release
+# e.g. load_schemas_from_dir /calm-schemas/release release
 load_schemas_from_dir() {
     local base_dir="$1"
     local prefix="$2"
@@ -143,33 +144,52 @@ load_schemas_from_dir() {
     done
 }
 
-# Resolve CALM_SCHEMA_BASE_PATH once (falling back to the calm/ dir beside this
-# script when unset) so every schema-reading function — create_core_schemas,
-# create_standards, create_interfaces — sees the same path.  Without this a bare
-# `bash init-nitrite.sh` (no env var) leaves the var empty, which causes those
-# functions to build absolute paths from '/' that don't exist and silently
-# [WARN]-skip content.  seed-readonly.sh always exports CALM_SCHEMA_BASE_PATH,
-# so the Docker build masks the issue; this fix makes the bare run equally safe.
-resolve_schema_base_path() {
-    if [[ -z "$CALM_SCHEMA_BASE_PATH" ]]; then
-        local script_dir
-        script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-        CALM_SCHEMA_BASE_PATH=$(realpath "$script_dir/../../calm" 2>/dev/null || echo "")
+# Resolve the schema path once (falling back to the directory beside this
+# script when unset) so create_core_schemas sees the same path.  Without this a
+# bare `bash init-nitrite.sh` (no env var) leaves the var empty, which causes
+# the function to build absolute paths from '/' that don't exist.
+# seed-readonly.sh always exports the path, so the Docker build masks the
+# issue; this makes the bare run equally safe.
+#
+# The released meta-schemas come from the @finos/calm-schema npm packages, which
+# `./mvnw package` copies to calm-hub/target/calm-schemas/release (see pom.xml).
+resolve_release_schema_path() {
+    local script_dir
+    script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+    if [[ -z "$CALM_RELEASE_SCHEMA_PATH" ]]; then
+        CALM_RELEASE_SCHEMA_PATH=$(realpath "$script_dir/../target/calm-schemas/release" 2>/dev/null || echo "")
     fi
+}
+
+# Name-based seeds build $id from CALM_HUB_BASE_URL. An explicit value (the
+# environment variable or --base-url) wins. Otherwise use CALM_HUB_URL, which
+# already includes -u/--url. The result must equal calm.hub.base-url.
+resolve_calm_hub_base_url() {
+    CALM_HUB_BASE_URL="${CALM_HUB_BASE_URL:-$CALM_HUB_URL}"
+}
+
+# Canonical $id the name-based API requires:
+# {calm.hub.base-url}/calm/namespaces/{namespace}/{resource}/{slug}/versions/{version}
+named_document_canonical_id() {
+    local namespace="$1"
+    local resource="$2"
+    local slug="$3"
+    local version="$4"
+    printf '%s/calm/namespaces/%s/%s/%s/versions/%s' \
+        "$CALM_HUB_BASE_URL" "$namespace" "$resource" "$slug" "$version"
 }
 
 # Function to create core schemas
 create_core_schemas() {
     print_status "Creating core schemas..."
 
-    if [[ -z "$CALM_SCHEMA_BASE_PATH" || ! -d "$CALM_SCHEMA_BASE_PATH" ]]; then
-        print_error "CALM schema base path not found. Set CALM_SCHEMA_BASE_PATH to the calm/ directory."
+    if [[ -z "$CALM_RELEASE_SCHEMA_PATH" || ! -d "$CALM_RELEASE_SCHEMA_PATH" ]]; then
+        print_error "Released CALM schemas not found. Run './mvnw package' in calm-hub (or 'npm run calm-hub:copy-schemas' at the repository root), or set CALM_RELEASE_SCHEMA_PATH."
         return 1
     fi
 
-    print_status "Loading schemas from: $CALM_SCHEMA_BASE_PATH"
-    load_schemas_from_dir "${CALM_SCHEMA_BASE_PATH}/release" "release"
-    load_schemas_from_dir "${CALM_SCHEMA_BASE_PATH}/draft" "draft"
+    print_status "Loading released schemas from: $CALM_RELEASE_SCHEMA_PATH"
+    load_schemas_from_dir "${CALM_RELEASE_SCHEMA_PATH}" "release"
 }
 
 # Function to POST a CALM document using the request envelope expected by the API.
@@ -221,7 +241,8 @@ post_named_document() {
     local version="$4"
     local doc="$5"
 
-    local canonical="${CALM_HUB_BASE_URL}/calm/namespaces/${namespace}/${resource}/${slug}/versions/${version}"
+    local canonical
+    canonical="$(named_document_canonical_id "$namespace" "$resource" "$slug" "$version")"
     local payload
     payload=$(printf '%s' "$doc" | jq --arg id "$canonical" '. + {"$id": $id}')
 
@@ -388,7 +409,7 @@ create_patterns() {
     local doc
     doc=$(cat <<'CALMDOC'
 {
-            "$schema": "https://calm.finos.org/calm/schemas/2025-03/meta/calm.json",
+            "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
             "$id": "https://calm.finos.org/calm/namespaces/finos/patterns/1/versions/1.0.0",
             "title": "API Gateway Pattern",
             "type": "object",
@@ -398,7 +419,7 @@ create_patterns() {
                     "minItems": 4,
                     "prefixItems": [
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "properties": {
                                 "well-known-endpoint": {
                                     "type": "string"
@@ -420,12 +441,22 @@ create_patterns() {
                                     "minItems": 1,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/host-port-interface",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "api-gateway-ingress"
+                                                },
+                                                "host": {
+                                                    "type": "string"
+                                                },
+                                                "port": {
+                                                    "type": "integer"
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "host",
+                                                "port"
+                                            ]
                                         }
                                     ]
                                 }
@@ -436,7 +467,7 @@ create_patterns() {
                             ]
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "properties": {
                                 "description": {
                                     "const": "The API Consumer making an authenticated and authorized request"
@@ -453,7 +484,7 @@ create_patterns() {
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "properties": {
                                 "description": {
                                     "const": "The API Producer serving content"
@@ -472,12 +503,22 @@ create_patterns() {
                                     "minItems": 1,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/host-port-interface",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "producer-ingress"
+                                                },
+                                                "host": {
+                                                    "type": "string"
+                                                },
+                                                "port": {
+                                                    "type": "integer"
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "host",
+                                                "port"
+                                            ]
                                         }
                                     ]
                                 }
@@ -487,7 +528,7 @@ create_patterns() {
                             ]
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "properties": {
                                 "description": {
                                     "const": "The Identity Provider used to verify the bearer token"
@@ -510,7 +551,7 @@ create_patterns() {
                     "minItems": 4,
                     "prefixItems": [
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "properties": {
                                 "unique-id": {
                                     "const": "api-consumer-api-gateway"
@@ -543,7 +584,7 @@ create_patterns() {
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "properties": {
                                 "unique-id": {
                                     "const": "api-gateway-idp"
@@ -569,7 +610,7 @@ create_patterns() {
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "properties": {
                                 "unique-id": {
                                     "const": "api-gateway-api-producer"
@@ -598,7 +639,7 @@ create_patterns() {
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "properties": {
                                 "unique-id": {
                                     "const": "api-consumer-idp"
@@ -640,7 +681,7 @@ CALMDOC
     local doc
     doc=$(cat <<'CALMDOC'
 {
-            "$schema": "https://calm.finos.org/calm/schemas/2025-03/meta/calm.json",
+            "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
             "$id": "https://calm.finos.org/calm/namespaces/workshop/patterns/1/versions/1.0.0",
             "type": "object",
             "title": "Conference Signup Pattern",
@@ -652,7 +693,7 @@ CALMDOC
                     "maxItems": 5,
                     "prefixItems": [
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -673,19 +714,25 @@ CALMDOC
                                     "maxItems": 1,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/url-interface",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "conference-website-url"
+                                                },
+                                                "url": {
+                                                    "type": "string"
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "url"
+                                            ]
                                         }
                                     ]
                                 }
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -706,19 +753,29 @@ CALMDOC
                                     "maxItems": 1,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/host-port-interface",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "load-balancer-host-port"
+                                                },
+                                                "host": {
+                                                    "type": "string"
+                                                },
+                                                "port": {
+                                                    "type": "integer"
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "host",
+                                                "port"
+                                            ]
                                         }
                                     ]
                                 }
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -739,27 +796,39 @@ CALMDOC
                                     "maxItems": 2,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/container-image-interface",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "attendees-image"
+                                                },
+                                                "image": {
+                                                    "type": "string"
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "image"
+                                            ]
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/port-interface",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "attendees-port"
+                                                },
+                                                "port": {
+                                                    "type": "integer"
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "port"
+                                            ]
                                         }
                                     ]
                                 }
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -780,27 +849,39 @@ CALMDOC
                                     "maxItems": 2,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/container-image-interface",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "database-image"
+                                                },
+                                                "image": {
+                                                    "type": "string"
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "image"
+                                            ]
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/port-interface",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "database-port"
+                                                },
+                                                "port": {
+                                                    "type": "integer"
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "port"
+                                            ]
                                         }
                                     ]
                                 }
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -825,7 +906,7 @@ CALMDOC
                     "maxItems": 4,
                     "prefixItems": [
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -855,7 +936,7 @@ CALMDOC
                             ]
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -885,7 +966,7 @@ CALMDOC
                             ]
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -915,7 +996,7 @@ CALMDOC
                             ]
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "properties": {
                                 "unique-id": {
                                     "const": "deployed-in-k8s-cluster"
@@ -962,7 +1043,7 @@ CALMDOC
     local pattern_v2
     pattern_v2=$(cat <<'CALMDOC'
 {
-            "$schema": "https://calm.finos.org/calm/schemas/2025-03/meta/calm.json",
+            "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
             "type": "object",
             "title": "Conference Signup Pattern",
             "description": "A reusable architecture pattern for conference signup systems with Kubernetes deployment.",
@@ -973,7 +1054,7 @@ CALMDOC
                     "maxItems": 6,
                     "prefixItems": [
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": { "const": "conference-website" },
@@ -983,7 +1064,7 @@ CALMDOC
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": { "const": "load-balancer" },
@@ -993,7 +1074,7 @@ CALMDOC
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": { "const": "attendees" },
@@ -1003,7 +1084,7 @@ CALMDOC
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": { "const": "attendees-store" },
@@ -1013,7 +1094,7 @@ CALMDOC
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": { "const": "attendees-cache" },
@@ -1023,7 +1104,7 @@ CALMDOC
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": { "const": "k8s-cluster" },
@@ -1040,7 +1121,7 @@ CALMDOC
                     "maxItems": 5,
                     "prefixItems": [
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "type": "object",
                             "properties": {
                                 "unique-id": { "const": "conference-website-load-balancer" },
@@ -1053,7 +1134,7 @@ CALMDOC
                             "required": [ "description" ]
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "type": "object",
                             "properties": {
                                 "unique-id": { "const": "load-balancer-attendees-service" },
@@ -1066,7 +1147,7 @@ CALMDOC
                             "required": [ "description" ]
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "type": "object",
                             "properties": {
                                 "unique-id": { "const": "attendees-attendees-store" },
@@ -1079,7 +1160,7 @@ CALMDOC
                             "required": [ "description" ]
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "type": "object",
                             "properties": {
                                 "unique-id": { "const": "attendees-attendees-cache" },
@@ -1092,7 +1173,7 @@ CALMDOC
                             "required": [ "description" ]
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "properties": {
                                 "unique-id": { "const": "deployed-in-k8s-cluster" },
                                 "description": { "const": "Components deployed on the k8s cluster" },
@@ -1123,7 +1204,7 @@ CALMDOC
     local doc
     doc=$(cat <<'CALMDOC'
 {
-            "$schema": "https://calm.finos.org/calm/schemas/2025-03/meta/calm.json",
+            "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
             "$id": "https://calm.finos.org/calm/namespaces/workshop/patterns/2/versions/1.0.0",
             "type": "object",
             "title": "Conference Secure Signup Pattern",
@@ -1135,7 +1216,7 @@ CALMDOC
                     "maxItems": 5,
                     "prefixItems": [
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -1156,19 +1237,25 @@ CALMDOC
                                     "maxItems": 1,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/url-interface",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "conference-website-url"
+                                                },
+                                                "url": {
+                                                    "type": "string"
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "url"
+                                            ]
                                         }
                                     ]
                                 }
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -1189,19 +1276,29 @@ CALMDOC
                                     "maxItems": 1,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/host-port-interface",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "load-balancer-host-port"
+                                                },
+                                                "host": {
+                                                    "type": "string"
+                                                },
+                                                "port": {
+                                                    "type": "integer"
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "host",
+                                                "port"
+                                            ]
                                         }
                                     ]
                                 }
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -1222,27 +1319,39 @@ CALMDOC
                                     "maxItems": 2,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/container-image-interface",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "attendees-image"
+                                                },
+                                                "image": {
+                                                    "type": "string"
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "image"
+                                            ]
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/port-interface",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "attendees-port"
+                                                },
+                                                "port": {
+                                                    "type": "integer"
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "port"
+                                            ]
                                         }
                                     ]
                                 }
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -1263,27 +1372,39 @@ CALMDOC
                                     "maxItems": 2,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/container-image-interface",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "database-image"
+                                                },
+                                                "image": {
+                                                    "type": "string"
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "image"
+                                            ]
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/port-interface",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "database-port"
+                                                },
+                                                "port": {
+                                                    "type": "integer"
                                                 }
-                                            }
+                                            },
+                                            "required": [
+                                                "port"
+                                            ]
                                         }
                                     ]
                                 }
                             }
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -1308,7 +1429,7 @@ CALMDOC
                     "maxItems": 4,
                     "prefixItems": [
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -1338,7 +1459,7 @@ CALMDOC
                             ]
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -1368,7 +1489,7 @@ CALMDOC
                             ]
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "type": "object",
                             "properties": {
                                 "unique-id": {
@@ -1398,7 +1519,7 @@ CALMDOC
                             ]
                         },
                         {
-                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                             "properties": {
                                 "unique-id": {
                                     "const": "deployed-in-k8s-cluster"
@@ -1829,7 +1950,7 @@ CALMDOC
     local doc
     doc=$(cat <<'CALMDOC'
 {
-            "$schema": "https://calm.finos.org/draft/2025-03/meta/calm.json",
+            "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
             "nodes": [
                 {
                     "unique-id": "traderx-system",
@@ -5247,7 +5368,7 @@ create_user_access() {
     print_status "Creating user access entries..."
     
     # Create sample user access for different namespaces
-    for namespace in finos finos.calm finos.traderx workshop finos.fluxnova finos.sdlc-common-controls finos.agentic-sdlc; do
+    for namespace in finos finos.calm finos.traderx workshop finos.fluxnova finos.sdlc-common-controls; do
         print_status "Creating user access for namespace: $namespace"
         curl -s -X POST "$CALM_HUB_URL/api/calm/namespaces/$namespace/user-access" \
             -H "$CONTENT_TYPE" \
@@ -5260,70 +5381,85 @@ create_user_access() {
     done
 }
 
-# Function to create standards
+# Copies of the decorator standards that calm-schema publishes, with their calm.finos.org $id.
+# The name-based API needs a hub $id, so they go through the numeric API. They sit in a
+# subdirectory of mongo/standards/finos.calm/, which the name-based seed does not read.
 create_standards() {
     print_status "Creating standards..."
 
-    # Create the CALM Deployment Decorator Standard in finos.calm
-    local f="${CALM_SCHEMA_BASE_PATH}/draft/2026-03/standards/deployment/deployment.decorator.standard.json"
-    if [[ -f "$f" ]]; then
-        local doc payload
-        doc=$(cat "$f")
-        payload=$(jq -n \
-            --arg name "CALM Deployment Decorator Standard" \
-            --arg description "Deployment decorator standard for architectures" \
-            --argjson doc "$doc" \
-            '{name: $name, description: $description, standardJson: ($doc | tojson)}')
-        local http_code
-        http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            "$CALM_HUB_URL/api/calm/namespaces/finos.calm/standards" \
-            -H "$CONTENT_TYPE" --data-binary @- <<< "$payload")
-        if [[ "$http_code" == "200" || "$http_code" == "201" ]]; then
-            print_status "Created deployment standard in finos.calm"
-        elif [[ "$http_code" == "409" ]]; then
-            print_warning "Deployment standard already exists, skipping"
-        else
-            print_warning "Failed to create deployment standard (HTTP $http_code)"
-        fi
-    else
-        print_warning "Deployment standard not found at $f"
+    local base_path="$CALM_STANDARDS_BASE_PATH"
+    if [[ -z "$base_path" ]]; then
+        base_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../mongo/standards"
     fi
+    local namespace_dir="$base_path/finos.calm"
+    # One directory per released standard. Deployment first, so that the deployment standard
+    # keeps standard id 1.
+    local dirs=("$namespace_dir/deployment")
+    local dir
+    for dir in "$namespace_dir"/*/; do
+        dir="${dir%/}"
+        [[ -d "$dir" && "$dir" != "$namespace_dir/deployment" ]] && dirs+=("$dir")
+    done
+    local f
+    for dir in "${dirs[@]}"; do
+        if [[ ! -d "$dir" ]]; then
+            print_warning "No standards directory at $dir"
+            continue
+        fi
+        for f in "$dir"/*.json; do
+            [[ -f "$f" ]] || continue
+            local payload http_code
+            payload=$(jq '{name: .title, description: .description, standardJson: tojson}' "$f")
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+                "$CALM_HUB_URL/api/calm/namespaces/finos.calm/standards" \
+                -H "$CONTENT_TYPE" --data-binary @- <<< "$payload")
+            if [[ "$http_code" == "200" || "$http_code" == "201" ]]; then
+                print_status "Created standard $(basename "$f") in finos.calm"
+            elif [[ "$http_code" == "409" ]]; then
+                print_warning "Standard $(basename "$f") already exists, skipping"
+            else
+                print_warning "Failed to create standard $(basename "$f") (HTTP $http_code)"
+            fi
+        done
+    done
 }
 
-# Function to seed CALM interface examples into finos.calm
+# Interfaces, one directory per namespace under calm-hub/mongo/interfaces/. The name is the
+# document's title. These are not CALM Standards, so the name-based API does not apply.
 create_interfaces() {
-    print_status "Creating interfaces in finos.calm..."
+    print_status "Creating interfaces..."
 
-    local interfaces_dir="${CALM_SCHEMA_BASE_PATH}/interfaces/example"
-    if [[ ! -d "$interfaces_dir" ]]; then
-        print_warning "Interfaces example directory not found at $interfaces_dir, skipping"
+    local base_path="$CALM_INTERFACES_BASE_PATH"
+    if [[ -z "$base_path" ]]; then
+        local script_dir
+        script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+        base_path=$(realpath "$script_dir/../mongo/interfaces" 2>/dev/null || echo "")
+    fi
+    if [[ -z "$base_path" || ! -d "$base_path" ]]; then
+        print_warning "No interfaces directory at ${base_path:-../mongo/interfaces}, skipping interfaces"
         return
     fi
 
-    for f in "$interfaces_dir"/*.json; do
-        [[ -f "$f" ]] || continue
-        local name doc payload http_code
-        # Derive name from the .title field; fall back to the basename without extension
-        name=$(jq -r '.title // empty' "$f")
-        if [[ -z "$name" ]]; then
-            name=$(basename "$f" .json)
+    print_status "Loading interfaces from: $base_path"
+    local namespace_dir
+    for namespace_dir in "$base_path"/*/; do
+        [[ -d "$namespace_dir" ]] || continue
+        local namespace
+        namespace=$(basename "$namespace_dir")
+        if ! create_namespace "$namespace" "$namespace namespace"; then
+            print_error "Cannot seed interfaces into namespace $namespace"
+            exit 1
         fi
-        doc=$(cat "$f")
-        payload=$(jq -n \
-            --arg name "$name" \
-            --arg description "CALM interface example: $name" \
-            --argjson doc "$doc" \
-            '{name: $name, description: $description, interfaceJson: ($doc | tojson)}')
-        http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            "$CALM_HUB_URL/api/calm/namespaces/finos.calm/interfaces" \
-            -H "$CONTENT_TYPE" --data-binary @- <<< "$payload")
-        if [[ "$http_code" == "200" || "$http_code" == "201" ]]; then
-            print_status "Created interface '$name' in finos.calm"
-        elif [[ "$http_code" == "409" ]]; then
-            print_warning "Interface '$name' already exists, skipping"
-        else
-            print_warning "Failed to create interface '$name' (HTTP $http_code)"
-        fi
+        local f
+        for f in "$namespace_dir"*.json; do
+            [[ -f "$f" ]] || continue
+            local name
+            name=$(jq -r '.title // empty' "$f")
+            if [[ -z "$name" ]]; then
+                name=$(basename "$f" .json)
+            fi
+            post_document "$namespace" interfaces interfaceJson "$name" "CALM interface: $name" "$(cat "$f")"
+        done
     done
 }
 
@@ -5435,7 +5571,7 @@ create_ai_governance_architecture() {
     local doc
     doc=$(cat <<'CALMDOC'
 {
-    "$schema": "https://calm.finos.org/draft/2025-03/meta/calm.json",
+    "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
     "unique-id": "mcp-api-pipeline",
     "name": "MCP Server API Pipeline",
     "description": "User \u2192 MCP Server (cloud-hosted) \u2192 API Service \u2192 Database. FINOS AIR AI Governance controls applied directly on nodes and relationships.",
@@ -6091,7 +6227,7 @@ create_timeline_demo() {
     # Patterns have no explicit timeline, so the bar always shows the implied
     # projection — useful for testing the pattern path of the timeline UI.
     local pattern_v1='{
-        "$schema": "https://calm.finos.org/calm/schemas/2025-03/meta/calm.json",
+        "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
         "title": "Demo Pattern",
         "type": "object",
         "properties": {
@@ -6113,7 +6249,7 @@ create_timeline_demo() {
         }
     }'
     local pattern_v2='{
-        "$schema": "https://calm.finos.org/calm/schemas/2025-03/meta/calm.json",
+        "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
         "title": "Demo Pattern",
         "type": "object",
         "properties": {
@@ -6144,7 +6280,7 @@ create_timeline_demo() {
         }
     }'
     local pattern_v3='{
-        "$schema": "https://calm.finos.org/calm/schemas/2025-03/meta/calm.json",
+        "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
         "title": "Demo Pattern",
         "type": "object",
         "properties": {
@@ -6261,14 +6397,16 @@ CALMDOC
 }
 
 main() {
+    resolve_calm_hub_base_url
     print_status "Starting CalmHub NitriteDB initialization..."
     print_status "Target URL: $CALM_HUB_URL"
+    print_status "Name-based \$id base: $CALM_HUB_BASE_URL (must equal calm.hub.base-url)"
 
     # Check if CalmHub is running
     check_calmhub_status
 
     # Initialize data in order
-    resolve_schema_base_path
+    resolve_release_schema_path
     create_namespaces
     create_core_schemas
     create_domains_and_controls
@@ -6296,16 +6434,29 @@ show_help() {
     echo ""
     echo "Options:"
     echo "  -h, --help               Show this help message"
-    echo "  -u, --url URL            Set CalmHub URL (default: http://localhost:8080)"
-    echo "  -s, --schema-path PATH   Set the calm/ base path for schema loading"
+    echo "  -u, --url URL            Set the URL this script calls (default: http://localhost:8080)."
+    echo "                           Also used as the name-based \$id base unless -b or"
+    echo "                           CALM_HUB_BASE_URL is set."
+    echo "  -b, --base-url URL       Set the base URL written into name-based document \$id"
+    echo "                           values. Must equal the server's calm.hub.base-url"
+    echo "                           (default: the URL from -u or CALM_HUB_URL)."
+    echo "  -r, --release-schema-path PATH Set the path to the released schemas (release/<version>/meta)"
+    echo "  -i, --interfaces-path PATH Set the base path for namespace interfaces"
     echo "  -c, --controls-path PATH Set the base path for domain control requirements"
     echo "  -t, --standards-path PATH Set the base path for namespace standards"
     echo "  -p, --patterns-path PATH Set the base path for namespace patterns"
     echo ""
     echo "Environment Variables:"
-    echo "  CALM_HUB_URL            CalmHub base URL (default: http://localhost:8080)"
-    echo "  CALM_SCHEMA_BASE_PATH   Path to the calm/ directory containing release/ and draft/ subdirectories"
-    echo "                          (default: auto-detected relative to this script)"
+    echo "  CALM_HUB_URL            URL this script calls (default: http://localhost:8080)"
+    echo "  CALM_HUB_BASE_URL       Base URL for name-based document \$id values. Must equal"
+    echo "                          the server's calm.hub.base-url. When unset, defaults to"
+    echo "                          CALM_HUB_URL after -u/--url is applied."
+    echo "  CALM_RELEASE_SCHEMA_PATH Path to the released schemas, one <version>/meta directory per release"
+    echo "                          (default: ../target/calm-schemas/release relative to this script,"
+    echo "                          which './mvnw package' copies from the @finos/calm-schema npm packages)"
+    echo "  CALM_INTERFACES_BASE_PATH Path to the interfaces directory containing one subdirectory per namespace,"
+    echo "                          each holding one interface JSON file per document"
+    echo "                          (default: auto-detected as ../mongo/interfaces relative to this script)"
     echo "  CALM_CONTROLS_BASE_PATH Path to the controls directory containing one subdirectory per domain,"
     echo "                          each holding control requirement JSON files"
     echo "                          (default: auto-detected as ../mongo/controls relative to this script)"
@@ -6318,44 +6469,59 @@ show_help() {
     echo ""
     echo "Examples:"
     echo "  $0                                    # Use default URL"
-    echo "  $0 -u http://localhost:9090          # Use custom URL"
-    echo "  CALM_HUB_URL=http://calm.local $0    # Use environment variable"
+    echo "  $0 -u http://localhost:18091          # Call that URL; \$id uses it too"
+    echo "  $0 -u http://localhost:18091 -b http://localhost:8080"
+    echo "                                        # Call 18091; \$id uses calm.hub.base-url"
+    echo "  CALM_HUB_URL=http://calm.local $0     # Use environment variable"
 }
 
-# Parse command line arguments
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        -h|--help)
-            show_help
-            exit 0
-            ;;
-        -u|--url)
-            CALM_HUB_URL="$2"
-            shift 2
-            ;;
-        -s|--schema-path)
-            CALM_SCHEMA_BASE_PATH="$2"
-            shift 2
-            ;;
-        -c|--controls-path)
-            CALM_CONTROLS_BASE_PATH="$2"
-            shift 2
-            ;;
-        -t|--standards-path)
-            CALM_STANDARDS_BASE_PATH="$2"
-            shift 2
-            ;;
-        -p|--patterns-path)
-            CALM_PATTERNS_BASE_PATH="$2"
-            shift 2
-            ;;
-        *)
-            print_error "Unknown option: $1"
-            show_help
-            exit 1
-            ;;
-    esac
-done
+# Parse command line arguments. Kept as a function so a regression test can
+# source this script and inspect CALM_HUB_BASE_URL without starting a seed.
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -u|--url)
+                CALM_HUB_URL="$2"
+                shift 2
+                ;;
+            -b|--base-url)
+                CALM_HUB_BASE_URL="$2"
+                shift 2
+                ;;
+            -r|--release-schema-path)
+                CALM_RELEASE_SCHEMA_PATH="$2"
+                shift 2
+                ;;
+            -i|--interfaces-path)
+                CALM_INTERFACES_BASE_PATH="$2"
+                shift 2
+                ;;
+            -c|--controls-path)
+                CALM_CONTROLS_BASE_PATH="$2"
+                shift 2
+                ;;
+            -t|--standards-path)
+                CALM_STANDARDS_BASE_PATH="$2"
+                shift 2
+                ;;
+            -p|--patterns-path)
+                CALM_PATTERNS_BASE_PATH="$2"
+                shift 2
+                ;;
+            *)
+                print_error "Unknown option: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+}
 
-# Run main function
-main
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    parse_args "$@"
+    main
+fi

@@ -2,16 +2,19 @@ import { Argument, Command, Option } from 'commander';
 import path from 'path';
 import { readFile, writeFile } from 'fs/promises';
 import { ensureWorkspaceBundle, getActiveWorkspace, listWorkspaces, setActiveWorkspace, cleanWorkspaceBundle, cleanAllWorkspaces } from './workspace';
-import { addFileToBundle, loadManifest, printBundleTree } from './bundle';
+import { addFileToBundle, loadManifest } from './bundle';
+import { printBundleTree } from './tree';
 import { removeDocumentFromManifest } from './rm';
 import { createNewDocument, getTemplatesForType } from './new';
 import { promptForDocumentId } from './document-id-prompt';
+import { documentTypeForContent, documentTypeForDocumentId, documentTypeHasIdType } from './document-id-type';
 import { pushWorkspaceToHub } from './push';
 import { detectChangedResources, bumpWorkspace } from './bump';
-import { runPostBumpValidation } from './post-bump-validate';
+import { markAsSnapshot, releaseSnapshot, findSnapshotDependencyViolations, listSnapshotCandidates } from './snapshot';
+import { loadPostBumpValidationOptions, runPostBumpValidation } from './post-bump-validate';
 import { loadWorkspaceConfig } from './config';
 import { findWorkspaceManifestPath, findProjectRoot } from '../../workspace-resolver';
-import { initLogger, Logger, CalmHubClient, ResourceChangeType, isConformantDocumentId, namespaceFromDocumentId } from '@finos/calm-shared';
+import { initLogger, Logger, CalmHubClient, ResourceChangeType, isConformantDocumentId, namespaceFromDocumentId, resourceTypeFromDocumentId, documentName } from '@finos/calm-shared';
 import { select, input } from '@inquirer/prompts';
 import {
     CALM_DOCUMENT_TYPES_LIST,
@@ -52,6 +55,8 @@ interface AddDocumentContext {
     file: string;
     options: WorkspaceAddOptions;
     srcPath: string;
+    /** The file's content, when it was already read to infer the document type. */
+    content?: string;
 }
 
 async function registerNarrativeDocument(
@@ -125,9 +130,10 @@ async function addMappingDocument(
     }
 
     // Parse the file once; we manage its $id only when it is valid JSON.
+    const raw = context.content ?? await readFile(srcPath, 'utf8');
     let fileJson: Record<string, unknown> | undefined;
     try {
-        fileJson = JSON.parse(await readFile(srcPath, 'utf8'));
+        fileJson = JSON.parse(raw);
     } catch (_) {
         fileJson = undefined;
     }
@@ -140,7 +146,7 @@ async function addMappingDocument(
     if (fileJson) {
         if (!existingId) {
             // No $id present: build one interactively and write it into the file.
-            const built = await promptForDocumentId({ baseUrlDefault });
+            const built = await promptForDocumentId({ baseUrlDefault, documentType: type });
             fileJson['$id'] = built.id;
             await writeFile(srcPath, JSON.stringify(fileJson, null, 2), 'utf8');
             logger.info(`Set document $id to ${built.id}`);
@@ -148,8 +154,17 @@ async function addMappingDocument(
             effectiveId = built.id;
         } else if (!isConformantDocumentId(existingId)) {
             // Non-conformant $id: warn but still add — push will skip non-pushable types anyway.
-            // Silently rewriting would be data loss for types that don't use CalmHub URLs (flow, adr, timeline, etc.).
+            // Silently rewriting would be data loss for types that don't use CalmHub URLs (adr, timeline, etc.).
             logger.warn(`Document $id '${existingId}' is not a conformant CalmHub id. The document will be tracked but cannot be pushed to CalmHub.`);
+        } else if (!documentTypeHasIdType(type)) {
+            logger.warn(`Document type '${type}' has no CalmHub resource type, so push and bump use the type in the $id '${existingId}'.`);
+        } else {
+            // push and bump take the type from the $id, but check validates by the manifest type,
+            // so a mismatch would skip validation.
+            const idType = documentTypeForDocumentId(existingId);
+            if (idType && idType !== type) {
+                throw new Error(`Document type '${type}' does not match the $id '${existingId}', which needs document type '${idType}'. Use --type ${idType}, or change the $id.`);
+            }
         }
     }
 
@@ -158,8 +173,9 @@ async function addMappingDocument(
         ?? (effectiveId ? namespaceFromDocumentId(effectiveId) : undefined);
 
     let id = options.id;
-    if (!id && fileJson && typeof fileJson['title'] === 'string' && (fileJson['title'] as string).trim()) {
-        id = (fileJson['title'] as string).trim();
+    if (!id && fileJson) {
+        // The same rule as extractDocumentMetadata: a flow has a name and no title.
+        id = documentName(fileJson, effectiveId ? resourceTypeFromDocumentId(effectiveId) : undefined)?.trim();
     }
     if (!id) {
         id = await input({ message: 'Enter a name for this document:' });
@@ -210,7 +226,7 @@ export function setupWorkspaceCommands(program: Command) {
         .command('add')
         .description('Add a file to the current CALM workspace bundle. By default, this creates a reference to the file at its current location.')
         .argument('<file>', 'Path to the file to add to the bundle')
-        .option('--id <id>', 'Document ID to register for this file (defaults to filename without extension)')
+        .option('--id <id>', 'Document ID to register for this file (defaults to document title or flow name, else prompts)')
         .option('--copy', 'Copy the file into the bundle instead of referencing it from its current location.')
         .addOption(new Option('--type <type>', 'Document type').choices([...CALM_DOCUMENT_TYPES_LIST, ...CALM_NARRATIVE_DOCUMENT_TYPES_LIST]))
         .option('--namespace <namespace>', 'CalmHub namespace to associate with this file')
@@ -286,7 +302,16 @@ export function setupWorkspaceCommands(program: Command) {
                 }
 
                 const documentTypes = [...CALM_DOCUMENT_TYPES_LIST, ...CALM_NARRATIVE_DOCUMENT_TYPES_LIST];
-                const type = await enforceOptionPresenceByPrompt(options.type, 'Select a document type:', documentTypes);
+                let content: string | undefined;
+                let type = options.type;
+                if (!type) {
+                    content = await readFile(srcPath, 'utf8');
+                    type = documentTypeForContent(content);
+                    if (type) {
+                        logger.info(`Using document type '${type}' from the document $id.`);
+                    }
+                }
+                type = await enforceOptionPresenceByPrompt(type, 'Select a document type:', documentTypes);
                 const resolvedType = resolveWorkspaceDocumentType(type);
                 if (!resolvedType) {
                     logger.error(`Invalid document type '${type}'. Must be one of: ${CALM_DOCUMENT_TYPES_LIST.join(', ')}`);
@@ -295,7 +320,7 @@ export function setupWorkspaceCommands(program: Command) {
                 await dispatchWorkspaceDocumentType(
                     resolvedType,
                     ADD_DOCUMENT_OPERATIONS,
-                    { bundlePath, file, options, srcPath }
+                    { bundlePath, file, options, srcPath, content }
                 );
             } catch (err) {
                 logger.error('Failed to add file to workspace bundle: ' + (err instanceof Error ? err.message : String(err)));
@@ -454,7 +479,7 @@ export function setupWorkspaceCommands(program: Command) {
         .description('Add a new document based on a template and track it in the current workspace. The CalmHub $id is built interactively.')
         .addArgument(new Argument('[type]', 'The type of document to create.')
             .choices([...CALM_DOCUMENT_TYPES_LIST]))
-        .argument('[name]', 'The title for your new document')
+        .argument('[name]', 'The name for your new document')
         .argument('[template]', 'The template for your new document')
         .action(async (type, name, template) => {
             try {
@@ -472,9 +497,9 @@ export function setupWorkspaceCommands(program: Command) {
                 const templates = await getTemplatesForType(type);
 
                 const baseUrlDefault = (await loadCliConfig())?.calmHubUrl;
-                const documentId = await promptForDocumentId({ baseUrlDefault });
+                const documentId = await promptForDocumentId({ baseUrlDefault, documentType: type });
 
-                name = await enforceOptionPresenceByPrompt(name, `Enter the title for your new ${type} document:`);
+                name = await enforceOptionPresenceByPrompt(name, `Enter the name for your new ${type} document:`);
                 if (!template) {
                     template = templates.length > 1
                         ? await enforceOptionPresenceByPrompt(undefined, 'Select a template:', templates)
@@ -530,6 +555,8 @@ export function setupWorkspaceCommands(program: Command) {
                 }
 
                 const calmHubOptions = await resolveCalmHubOptions({ calmHubUrl: options.calmHubUrl });
+                const manifest = await loadManifest(bundlePath);
+                const validationOptions = await loadPostBumpValidationOptions(bundlePath, manifest, calmHubOptions);
                 const client = new CalmHubClient(calmHubOptions);
                 const changed = await detectChangedResources(bundlePath, client);
 
@@ -544,8 +571,7 @@ export function setupWorkspaceCommands(program: Command) {
                     }
                 }
 
-                const manifest = await loadManifest(bundlePath);
-                const validationResults = await runPostBumpValidation(bundlePath, manifest);
+                const validationResults = validationOptions ? await runPostBumpValidation(bundlePath, manifest, validationOptions) : [];
                 let validationFailed = false;
                 if (validationResults.length > 0) {
                     const failures = validationResults.filter(r => !r.passed);
@@ -562,7 +588,14 @@ export function setupWorkspaceCommands(program: Command) {
                     }
                 }
 
-                if (needsBump || validationFailed) {
+                // A document that is not itself a snapshot must not reference a snapshot — that would
+                // bake a reference to mutable content into what's meant to be an immutable release.
+                const snapshotViolations = await findSnapshotDependencyViolations(bundlePath);
+                for (const v of snapshotViolations) {
+                    logger.error(`'${v.id}' depends on snapshot version(s) of: ${v.dependsOn.join(', ')} — release those first, or pin a released version.`);
+                }
+
+                if (needsBump || validationFailed || snapshotViolations.length > 0) {
                     process.exit(1);
                 }
             } catch (err) {
@@ -587,17 +620,16 @@ export function setupWorkspaceCommands(program: Command) {
                     process.exit(1);
                 }
 
-                if ([options.major, options.minor, options.patch].filter(Boolean).length > 1) {
-                    logger.error('Cannot use --major, --minor and --patch together.');
+                const workspaceConfig = await loadWorkspaceConfig(findProjectRoot(process.cwd()));
+                let defaultIncrement: ResourceChangeType;
+                try {
+                    defaultIncrement = resolveIncrement(options, workspaceConfig.bump.defaultIncrement);
+                } catch (err) {
+                    logger.error(err instanceof Error ? err.message : String(err));
                     process.exit(1);
                 }
 
                 const calmHubOptions = await resolveCalmHubOptions({ calmHubUrl: options.calmHubUrl });
-
-                const workspaceConfig = await loadWorkspaceConfig(findProjectRoot(process.cwd()));
-                const defaultIncrement: ResourceChangeType =
-                    options.major ? 'MAJOR' : options.minor ? 'MINOR' : options.patch ? 'PATCH' : workspaceConfig.bump.defaultIncrement;
-
                 const client = new CalmHubClient(calmHubOptions);
 
                 // Detect changed resources up-front so interactive prompts can be shown before
@@ -608,6 +640,8 @@ export function setupWorkspaceCommands(program: Command) {
                     logger.info('No documents needed bumping.');
                     return;
                 }
+
+                const validationOptions = await loadPostBumpValidationOptions(bundlePath, await loadManifest(bundlePath), calmHubOptions);
 
                 // When --major, --minor or --patch is given, skip all prompts and apply a fixed increment.
                 const interactive = !options.major && !options.minor && !options.patch;
@@ -667,7 +701,7 @@ export function setupWorkspaceCommands(program: Command) {
                 // Post-bump validation: silently validate all architectures and patterns, then
                 // print a summary so the user knows whether bumping caused any regressions.
                 const manifest = await loadManifest(bundlePath);
-                const validationResults = await runPostBumpValidation(bundlePath, manifest);
+                const validationResults = validationOptions ? await runPostBumpValidation(bundlePath, manifest, validationOptions) : [];
                 if (validationResults.length > 0) {
                     const failures = validationResults.filter(r => !r.passed);
                     if (failures.length === 0) {
@@ -686,6 +720,91 @@ export function setupWorkspaceCommands(program: Command) {
                 process.exit(1);
             }
         });
+
+    workspaceCmd
+        .command('snapshot')
+        .description('Mark a tracked document as a mutable -SNAPSHOT version. Bumps it first if the current version is already published on CalmHub.')
+        .argument('[id]', 'The ID of the document to snapshot (prompted for if omitted)')
+        .option('--calm-hub-url <url>', 'CalmHub base URL (overrides ~/.calm.json)')
+        .option('--major', 'Bump major before snapshotting, if the current version is already published')
+        .option('--minor', 'Bump minor before snapshotting, if the current version is already published')
+        .option('--patch', 'Bump patch before snapshotting, if the current version is already published')
+        .action(async (id: string | undefined, options: { calmHubUrl?: string; major?: boolean; minor?: boolean; patch?: boolean }) => {
+            try {
+                const bundlePath = findWorkspaceManifestPath(process.cwd());
+                if (!bundlePath) {
+                    logger.error('No CALM workspace bundle found. Create one with `calm workspace init <name>`');
+                    process.exit(1);
+                }
+
+                const workspaceConfig = await loadWorkspaceConfig(findProjectRoot(process.cwd()));
+                let increment: ResourceChangeType;
+                try {
+                    increment = resolveIncrement(options, workspaceConfig.bump.defaultIncrement);
+                } catch (err) {
+                    logger.error(err instanceof Error ? err.message : String(err));
+                    process.exit(1);
+                }
+
+                if (!id) {
+                    const { releases } = await listSnapshotCandidates(bundlePath);
+                    if (releases.length === 0) {
+                        logger.info('No tracked documents can be snapshotted.');
+                        return;
+                    }
+                    id = await enforceOptionPresenceByPrompt(id, 'Select a document to snapshot:', releases);
+                }
+
+                const calmHubOptions = await resolveCalmHubOptions({ calmHubUrl: options.calmHubUrl });
+                const client = new CalmHubClient(calmHubOptions);
+                const result = await markAsSnapshot(bundlePath, id, client, { increment });
+                logger.info(`'${result.id}': ${result.fromVersion} -> ${result.toVersion}`);
+            } catch (err) {
+                logger.error('Failed to snapshot document: ' + (err instanceof Error ? err.message : String(err)));
+                process.exit(1);
+            }
+        });
+
+    workspaceCmd
+        .command('release')
+        .description('Strip the -SNAPSHOT suffix from a tracked document, turning it back into an immutable release version.')
+        .argument('[id]', 'The ID of the document to release (prompted for if omitted)')
+        .option('--calm-hub-url <url>', 'CalmHub base URL (overrides ~/.calm.json)')
+        .action(async (id: string | undefined, options: { calmHubUrl?: string }) => {
+            try {
+                const bundlePath = findWorkspaceManifestPath(process.cwd());
+                if (!bundlePath) {
+                    logger.error('No CALM workspace bundle found. Create one with `calm workspace init <name>`');
+                    process.exit(1);
+                }
+
+                if (!id) {
+                    const { snapshots } = await listSnapshotCandidates(bundlePath);
+                    if (snapshots.length === 0) {
+                        logger.info('No tracked documents are snapshots.');
+                        return;
+                    }
+                    id = await enforceOptionPresenceByPrompt(id, 'Select a document to release:', snapshots);
+                }
+
+                const calmHubOptions = await resolveCalmHubOptions({ calmHubUrl: options.calmHubUrl });
+                const client = new CalmHubClient(calmHubOptions);
+                const result = await releaseSnapshot(bundlePath, id, client);
+                logger.info(`'${result.id}': ${result.fromVersion} -> ${result.toVersion}`);
+            } catch (err) {
+                logger.error('Failed to release document: ' + (err instanceof Error ? err.message : String(err)));
+                process.exit(1);
+            }
+        });
+}
+
+type IncrementFlags = { major?: boolean; minor?: boolean; patch?: boolean };
+
+function resolveIncrement(options: IncrementFlags, defaultIncrement: ResourceChangeType): ResourceChangeType {
+    if ([options.major, options.minor, options.patch].filter(Boolean).length > 1) {
+        throw new Error('Cannot use --major, --minor and --patch together.');
+    }
+    return options.major ? 'MAJOR' : options.minor ? 'MINOR' : options.patch ? 'PATCH' : defaultIncrement;
 }
 
 async function enforceOptionPresenceByPrompt(cliInput: string | undefined, prompt: string, choices?: readonly string[]): Promise<string> {

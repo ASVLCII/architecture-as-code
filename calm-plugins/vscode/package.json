@@ -2,7 +2,7 @@
   "name": "calm-vscode-plugin",
   "displayName": "CALM Canvas",
   "description": "Visual architecture editor for CALM models using ReactFlow",
-  "version": "0.9.0",
+  "version": "0.9.3",
   "publisher": "FINOS",
   "license": "Apache-2.0",
   "repository": {
@@ -20,11 +20,7 @@
   ],
   "activationEvents": [
     "workspaceContains:**/*.calm.json",
-    "workspaceContains:**/*.architecture.json",
-    "workspaceContains:**/*.template.json",
-    "workspaceContains:**/*.solution.json",
-    "workspaceContains:**/*.standard.json",
-    "workspaceContains:**/*.guideline.json"
+    "workspaceContains:**/*.architecture.json"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -37,6 +33,23 @@
           "light": "media/calm-canvas.svg",
           "dark": "media/calm-canvas.svg"
         }
+      },
+      {
+        "command": "calm.connectToHub",
+        "title": "CALM: Connect to Hub"
+      },
+      {
+        "command": "calm.disconnectFromHub",
+        "title": "CALM: Disconnect from Hub"
+      },
+      {
+        "command": "calm.refreshFromHub",
+        "title": "CALM: Refresh from Hub"
+      },
+      {
+        "command": "calm.importSvg",
+        "title": "Import SVG as CALM Architecture",
+        "category": "CALM"
       }
     ],
     "keybindings": [
@@ -44,28 +57,33 @@
         "command": "calm.openCanvas",
         "key": "ctrl+shift+k",
         "mac": "cmd+shift+k",
-        "when": "resourceFilename =~ /\\.(calm|architecture|template|solution|standard|guideline)\\.json$/"
+        "when": "resourceFilename =~ /\\.(calm|architecture)\\.json$/"
       }
     ],
     "menus": {
       "editor/title": [
         {
           "command": "calm.openCanvas",
-          "when": "resourceFilename =~ /\\.(calm|architecture|template|solution|standard|guideline)\\.json$/",
+          "when": "resourceFilename =~ /\\.(calm|architecture)\\.json$/",
           "group": "navigation"
         }
       ],
       "editor/context": [
         {
           "command": "calm.openCanvas",
-          "when": "resourceFilename =~ /\\.(calm|architecture|template|solution|standard|guideline)\\.json$/",
+          "when": "resourceFilename =~ /\\.(calm|architecture)\\.json$/",
           "group": "navigation"
         }
       ],
       "explorer/context": [
         {
           "command": "calm.openCanvas",
-          "when": "resourceFilename =~ /\\.(calm|architecture|template|solution|standard|guideline)\\.json$/",
+          "when": "resourceFilename =~ /\\.(calm|architecture)\\.json$/",
+          "group": "navigation"
+        },
+        {
+          "command": "calm.importSvg",
+          "when": "resourceExtname == .svg",
           "group": "navigation"
         }
       ]
@@ -93,44 +111,65 @@
           },
           "default": [],
           "markdownDescription": "List of node type IDs to hide from the palette (e.g. `[\"core:ldap\", \"aws:s3\"]`). Use the `packId:nodeType` format."
+        },
+        "calm.hub.url": {
+          "type": "string",
+          "default": "",
+          "description": "CalmHub endpoint URL (e.g. https://calmhub.example.com)"
+        },
+        "calm.hub.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically connect to CalmHub on startup when URL is configured"
+        },
+        "calm.hub.selectedNamespaces": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Selected Hub namespaces to show in the palette. Empty or not set shows all namespaces."
         }
       }
     }
   },
   "scripts": {
-    "build": "node esbuild.mjs && npx vite build --config vite.webview.config.ts",
+    "build": "node esbuild.mjs && npx vite build --config vite.webview.config.mts",
     "build:extension": "node esbuild.mjs",
-    "build:webview": "npx vite build --config vite.webview.config.ts",
+    "build:webview": "npx vite build --config vite.webview.config.mts",
     "watch": "node esbuild.mjs --watch",
     "package": "npm run build && npx @vscode/vsce package --no-dependencies",
     "vscode:prepublish": "npm run build",
     "test": "vitest run",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "changelog": "node ../../scripts/vscode-changelog.mjs"
   },
   "dependencies": {
     "@finos/calm-models": "file:../../calm-models",
+    "@finos/calm-shared": "file:../../shared",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "reactflow": "^11.11.4",
     "html-to-image": "1.11.13",
     "yaml": "^2.7.0",
-    "@dagrejs/dagre": "^1.1.4",
+    "@dagrejs/dagre": "^3.1.3",
     "zustand": "^5.0.15",
     "ajv": "^8.17.0",
-    "ajv-formats": "^3.0.0"
+    "ajv-formats": "^3.0.0",
+    "svg-parser": "^2.0.4",
+    "xml2js": "^0.5.0"
   },
   "devDependencies": {
     "@finos/calm-schema": "*",
-    "vite": "^6.3.0",
-    "@vitejs/plugin-react": "^4.0.0",
+    "vite": "^8.0.0",
+    "@vitejs/plugin-react": "^5.0.0",
     "@tailwindcss/vite": "^4.1.0",
     "tailwindcss": "^4.1.0",
     "esbuild": "^0.25.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "@types/vscode": "^1.88.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "typescript": "^5.8.0",
-    "vitest": "^4.1.0",
-    "@vscode/vsce": "^4.0.0"
+    "vitest": "^5.0.5",
+    "@vscode/vsce": "^4.0.0",
+    "@types/xml2js": "^0.4.14"
   }
 }

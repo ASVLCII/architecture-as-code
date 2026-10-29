@@ -69,6 +69,20 @@ public class TestMappingControllerResourcePutShould {
     }
 
     @Test
+    void return_a_lowercase_location_when_the_put_id_capitalises_the_type() throws Exception {
+        ResourceMapping existing = new ResourceMapping.ResourceMappingBuilder()
+                .setNamespace("finos").setCustomId("api-gateway")
+                .setResourceType(ResourceType.PATTERN).setNumericId(1).build();
+        when(mockMappingStore.getMapping("finos", ResourceType.PATTERN, "api-gateway")).thenReturn(existing);
+
+        given().header("Content-Type", "application/json")
+                .body(versionedDoc("finos", "Patterns", "api-gateway", "1.0.0", "test pattern"))
+                .when().put("/calm")
+                .then().statusCode(201)
+                .header("Location", containsString("/calm/namespaces/finos/patterns/api-gateway/versions/1.0.0"));
+    }
+
+    @Test
     void store_the_document_body_as_content_and_the_title_as_the_name() throws Exception {
         // The other PUT tests match with any(Pattern.class), which cannot catch the stored
         // fields being transposed.
@@ -122,6 +136,38 @@ public class TestMappingControllerResourcePutShould {
     }
 
     @Test
+    void store_the_name_of_a_flow_that_has_no_title() throws Exception {
+        ResourceMapping existing = new ResourceMapping.ResourceMappingBuilder()
+                .setNamespace("finos").setCustomId("my-flow")
+                .setResourceType(ResourceType.FLOW).setNumericId(5).build();
+        when(mockMappingStore.getMapping("finos", ResourceType.FLOW, "my-flow")).thenReturn(existing);
+        String flow = "{\"$id\":\"http://localhost:8080/calm/namespaces/finos/flows/my-flow/versions/1.0.0\","
+                + "\"unique-id\":\"my-flow\",\"name\":\"My Flow\",\"description\":\"A flow\",\"transitions\":[]}";
+
+        given().header("Content-Type", "application/json")
+                .body(flow)
+                .when().put("/calm")
+                .then().statusCode(201);
+
+        ArgumentCaptor<Flow> captor = ArgumentCaptor.forClass(Flow.class);
+        verify(mockFlowStore).updateFlowForVersion(captor.capture());
+        assertThat(captor.getValue().getName(), is("My Flow"));
+    }
+
+    @Test
+    void return_400_when_put_body_has_no_title_or_name() throws Exception {
+        ResourceMapping existing = new ResourceMapping.ResourceMappingBuilder()
+                .setNamespace("finos").setCustomId("my-flow")
+                .setResourceType(ResourceType.FLOW).setNumericId(5).build();
+        when(mockMappingStore.getMapping("finos", ResourceType.FLOW, "my-flow")).thenReturn(existing);
+
+        given().header("Content-Type", "application/json")
+                .body("{\"$id\":\"http://localhost:8080/calm/namespaces/finos/flows/my-flow/versions/1.0.0\"}")
+                .when().put("/calm")
+                .then().statusCode(400).body(containsString("'title' or 'name' is required"));
+    }
+
+    @Test
     void return_501_when_updating_standard() throws Exception {
         ResourceMapping existing = new ResourceMapping.ResourceMappingBuilder()
                 .setNamespace("finos").setCustomId("my-standard")
@@ -132,6 +178,14 @@ public class TestMappingControllerResourcePutShould {
                 .body(versionedDoc("finos", "standards", "my-standard", "1.0.0", "test standard"))
                 .when().put("/calm")
                 .then().statusCode(501).body(containsString("not supported"));
+    }
+
+    @Test
+    void name_the_lowercase_type_in_the_501_when_the_put_id_capitalises_it() {
+        given().header("Content-Type", "application/json")
+                .body(versionedDoc("finos", "Standards", "my-standard", "1.0.0", "test standard"))
+                .when().put("/calm")
+                .then().statusCode(501).body(is("PUT is not supported for resource type: standards"));
     }
 
     @Test

@@ -5,7 +5,7 @@ This guide helps AI assistants work efficiently with the CALM Hub backend codeba
 ## Tech Stack
 
 - **Language**: Java 21
-- **Framework**: Quarkus (Reactive REST, CDI) — version is set via `quarkus.platform.version` in the root `pom.xml`
+- **Framework**: Quarkus (Reactive REST, CDI) — version is set via `quarkus.platform.version` in the root `pom.xml`. Use [LTS releases](https://quarkus.io/blog/tag/lts/) only: upgrade to a new LTS release or a patch of the current LTS, never to a non-LTS minor release
 - **Build Tool**: Maven (via parent POM)
 - **Databases**: 
   - MongoDB (production default)
@@ -28,7 +28,7 @@ This guide helps AI assistants work efficiently with the CALM Hub backend codeba
 # Development Mode (Hot Reload)
 # NOTE: The default profile is secure (401 on all requests). Use no-auth for local testing.
 ../mvnw quarkus:dev -Dquarkus.profile=no-auth        # No-auth (local testing, MongoDB)
-../mvnw quarkus:dev -Pstandalone                     # Standalone (NitriteDB) — no-auth is implicit
+../mvnw quarkus:dev -Pstandalone                     # Standalone (NitriteDB) — no-auth is implicit, no Docker needed
 ../mvnw quarkus:dev -Pstandalone,server-only         # Standalone + no frontend build — profiles compose
 ../mvnw quarkus:dev -Dquarkus.profile=secure         # Secure mode (Keycloak)
 
@@ -266,6 +266,7 @@ All images are multi-arch (`linux/amd64` + `linux/arm64`). Native images are bui
 CALM_READONLY=true
 QUARKUS_PROFILE=standalone
 CALM_STANDALONE_DATA_DIRECTORY=/deployments/data
+CALM_HUB_BASE_URL=https://hub.calm.finos.org
 ```
 
 ### How the Read-Only Data Image Layer is Built
@@ -274,8 +275,8 @@ The read-only images use a **two-stage Docker build**:
 
 ```
 Stage 1 — seed (JVM, writable)
-  FROM ubi9/openjdk-21
-  COPY quarkus-app/ + calm/ schemas + controls/
+  FROM ubi8/openjdk-21 (static) or ubi9/openjdk-21 (native)
+  COPY quarkus-app/ + released meta-schemas (npm copy) + controls/ + interfaces/
   RUN boot Quarkus in standalone (writable) mode
       init script POSTs all namespaces, schemas, controls
       graceful SIGTERM → NitriteDB flushes + commits (~290–450 KB)
@@ -286,6 +287,7 @@ Stage 2 — runtime (minimal base)
   chmod 0444                              ← filesystem-level immutability
   ENV CALM_READONLY=true
   ENV QUARKUS_PROFILE=standalone
+  ENV CALM_HUB_BASE_URL=https://hub.calm.finos.org
 ```
 
 **Why native read-only uses JVM for seeding:** GraalVM native binaries cannot reliably *write* (commit) the H2 MVStore backing NitriteDB due to Java serialisation requirements not fully supported in native. The JVM seed stage writes the database; the native binary only reads it. Serialisation metadata for the read path is registered in `META-INF/native-image/org.finos/calm-hub/serialization-config.json`.
@@ -361,8 +363,8 @@ curl -s -X POST http://localhost:8080/mcp \
 |:-------------|:----------|:-------------------------------|
 | `docker-publish-calm-hub.yml` | `latest` | `calm-hub/**` (excl. `calm-hub/ec2/**`), `calm-hub-ui/**` |
 | `docker-publish-calm-hub-native.yml` | `latest-native` | `calm-hub/**` (excl. `calm-hub/ec2/**`), `calm-hub-ui/**` |
-| `docker-publish-calm-hub-readonly.yml` | `latest-read-only-static` | `calm-hub/**` (excl. `calm-hub/ec2/**`), `calm-hub-ui/**`, `calm/**` |
-| `docker-publish-calm-hub-readonly-native.yml` | `latest-read-only-native` | `calm-hub/**` (excl. `calm-hub/ec2/**`), `calm-hub-ui/**`, `calm/**` |
+| `docker-publish-calm-hub-readonly.yml` | `latest-read-only-static` | `calm-hub/**` (excl. `calm-hub/ec2/**`), `calm-hub-ui/**` |
+| `docker-publish-calm-hub-readonly-native.yml` | `latest-read-only-native` | `calm-hub/**` (excl. `calm-hub/ec2/**`), `calm-hub-ui/**` |
 
 `calm-hub/ec2/**` (the EC2 deployment scripts) is excluded from all four triggers so edits to the on-box install/deploy tooling don't kick off a native multi-arch image rebuild.
 
@@ -395,12 +397,21 @@ All four workflows:
   method returns a disabled error, though the `/mcp` HTTP endpoint stays reachable
 - Enable with `-Dcalm.mcp.enabled=true` or `CALM_MCP_ENABLED=true`
 
+### UI Customization
+- `config/UiConfig` (`@ConfigMapping(prefix = "calm.ui")`) holds the operator values that
+  `GET /api/calm/ui/config` (`UiConfigResource`) returns to CALM Hub UI
+- `UiConfigValidator` fails startup on a bad colour, URL or item, so do not relax its checks:
+  they stop CSS injection and `javascript:` links in the UI
+- The response leaves out a section that is not configured or not enabled. The server does not
+  read `SecurityIdentity` unless `calm.ui.identity.enabled=true`
+
 ### Read-Only Deployment Mode
 - `calm.readonly=true` opens Nitrite with `readOnly(true)` and installs
   `ReadOnlyRequestFilter`, which rejects mutating verbs (POST/PUT/PATCH/DELETE)
   on `/calm/*` with `405 Method Not Allowed`
 - `build-readonly-image.sh` packages a static, pre-seeded read-only Docker image
-  (Maven package + stage `calm/` schemas, controls, standards and patterns + build `Dockerfile.readonly-static`)
+  (Maven package + stage the released meta-schemas from `target/calm-schemas`, controls,
+  standards, patterns and interfaces + build `Dockerfile.readonly-static`)
 
 ### Bundled CALM Meta-Schemas
 - GitHub mode serves `/calm/schemas` from `META-INF/calm-schemas/` on the classpath (`ClasspathCoreSchemaStore`)
@@ -415,7 +426,18 @@ All four workflows:
 ### Local-Dev Nitrite Seeding
 - `nitrite/init-nitrite.sh` is the standard script for seeding a local Nitrite
   database for standalone development; `nitrite/seed-readonly.sh` seeds the
-  read-only variant
+  read-only variant. `-u` sets the URL the script calls and, unless
+  `CALM_HUB_BASE_URL` or `--base-url` is set, the name-based `$id` base. That
+  base must equal the server's `calm.hub.base-url`. Resolve it after argument
+  parsing (`resolve_calm_hub_base_url`); defaulting it at the top ignores `-u`
+- The released meta-schemas come from `target/calm-schemas/release`, the npm copy that
+  `./mvnw package` makes (`npm run calm-hub:copy-schemas` makes it without Maven). The
+  seed data under `mongo/` (controls, standards, patterns, interfaces) is one directory per domain
+  or namespace
+- The name-based seed reads only the JSON files at the top of each `mongo/standards/<namespace>/`
+  directory, and requires a hub `$id`. Each subdirectory of `mongo/standards/finos.calm/` holds copies
+  of the decorator standards of one calm-schema release, with their calm.finos.org `$id`, so
+  `create_standards` seeds them through the numeric API instead, `deployment/` first
 
 ### Integration Tests
 - Located in `src/integration-test/java/`
@@ -595,6 +617,11 @@ pattern. Toggle independently with `calm.audit.store.enabled` / `calm.audit.log.
 `calm.audit.capture-source-ip` (all in `application.properties`). No REST API exposes the
 trail in this iteration — read it via direct DB access or ops tooling.
 
+GitHub storage mode (`calm.database.mode=github`) has no database, so it does not persist the
+trail: `GitHubAuditLogStore.query()` always returns an empty list, and the structured log line
+is the only record. `GitHubStartupInitializer` logs a warning about this at startup. Route the
+`org.finos.calm.audit` category to a durable sink if you need the trail in GitHub mode.
+
 ### Adding a New Storage Backend
 1. Create package: `org.finos.calm.store.mybackend`
 2. Implement all store interfaces
@@ -663,9 +690,13 @@ CALM Hub is largely independent - it's a standalone REST API server.
 1. **TestContainers Errors**: Ensure Docker is running before integration tests
 2. **Port Conflicts**: Check if port 8080 is free (or change `quarkus.http.port`)
 3. **MongoDB Connection**: Start MongoDB before dev mode (unless using `-Pstandalone` for NitriteDB)
-   - **IMPORTANT**: Use `-Pstandalone` (Maven profile), not `-Dquarkus.profile=standalone`. The Maven plugin
-     forks a separate JVM and the `-D` flag does not reliably propagate; the Maven profile injects
-     `quarkus.profile=standalone` via the plugin's own `systemProperties` configuration.
+   - **IMPORTANT**: Use `-Pstandalone` (Maven profile), not `-Dquarkus.profile=standalone`. Dev mode
+     does not apply a `quarkus.profile` set with `-D` on the Maven command line; the Maven profile injects
+     `quarkus.profile=standalone` via the plugin's own `systemProperties` configuration. Other `-D`
+     flags reach the app.
+   - Standalone turns off all dev services, so it needs no Docker. To start the Grafana LGTM
+     observability dev service, add `-Dquarkus.devservices.enabled=true` (needs Docker).
+     OpenTelemetry stays off until you also set `CALM_OTEL_DISABLED=false`.
 4. **Certificate Issues**: Use exact CN in URLs when using self-signed certs
 5. **Profile Selection**: Remember to pass `-Dquarkus.profile=secure` for secure mode
 6. **Reflected XSS in error bodies/logs**: Concatenating a raw `@PathParam`/`@QueryParam`/request

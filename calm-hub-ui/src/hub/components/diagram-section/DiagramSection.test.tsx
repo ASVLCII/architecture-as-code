@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, useNavigate } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { DiagramSection } from './DiagramSection.js';
@@ -20,6 +20,10 @@ const calmServiceMock = {
     fetchMappings: vi
         .fn()
         .mockResolvedValue([{ namespace: 'arch-namespace', customId: 'test-arch', resourceType: 'Architectures', numericId: 42 }]),
+};
+
+const implementationServiceMock = {
+    fetchImplementations: vi.fn().mockResolvedValue([]),
 };
 
 const layoutServiceMock = {
@@ -74,14 +78,16 @@ vi.mock('./compare/CompareView.js', () => ({
 vi.mock('./timeline/TimelineBar.js', () => ({
     TimelineBar: ({
         currentVersion,
+        moments,
         onNavigate,
         onCompare,
     }: {
         currentVersion: string;
+        moments: unknown[];
         onNavigate: (v: string) => void;
         onCompare: (from: string, to: string) => void;
     }) => (
-        <div data-testid="timeline-bar" data-current={currentVersion}>
+        <div data-testid="timeline-bar" data-current={currentVersion} data-moments={moments.length}>
             <button onClick={() => onNavigate('2.0.0')}>nav-2.0.0</button>
             <button onClick={() => onCompare('1.0.0', '2.0.0')}>compare</button>
         </div>
@@ -96,6 +102,12 @@ vi.mock('../../../service/calm-service.js', () => ({
         fetchArchitectureSummaries: calmServiceMock.fetchArchitectureSummaries,
         fetchPatternSummaries: calmServiceMock.fetchPatternSummaries,
         fetchMappings: calmServiceMock.fetchMappings,
+    }; }),
+}));
+
+vi.mock('../../../service/pattern-implementation-service.js', () => ({
+    PatternImplementationService: vi.fn().mockImplementation(function () { return {
+        fetchImplementations: implementationServiceMock.fetchImplementations,
     }; }),
 }));
 
@@ -133,7 +145,228 @@ describe('DiagramSection', () => {
         calmServiceMock.fetchDeploymentDecoratorsForArchitecture.mockResolvedValue([]);
         calmServiceMock.fetchVersionsByCustomId.mockResolvedValue(['1.0.0', '2.0.0']);
         calmServiceMock.fetchArchitectureTimeline.mockRejectedValue(new Error('no timeline'));
+        implementationServiceMock.fetchImplementations.mockResolvedValue([]);
         userAccessMock.canWriteNamespace.mockReturnValue(false);
+    });
+
+    describe('used by tab', () => {
+        const implementations = [{ namespace: 'finos', architectureId: 7, version: '1.2.0', customId: 'trade-capture' }];
+
+        function renderPattern(data: Data & { calmType: 'Patterns' } = patternData) {
+            return render(
+                <MemoryRouter>
+                    <DiagramSection data={data} />
+                </MemoryRouter>
+            );
+        }
+
+        it('shows the tab for a pattern, and asks by the pattern name only when the tab opens', async () => {
+            const user = userEvent.setup();
+            renderPattern();
+
+            const tab = await screen.findByRole('tab', { name: 'Used by' });
+            expect(implementationServiceMock.fetchImplementations).not.toHaveBeenCalled();
+
+            await user.click(tab);
+
+            expect(implementationServiceMock.fetchImplementations).toHaveBeenCalledWith('pattern-namespace', 'test-pattern', '2.0.0');
+        });
+
+        it('asks by the pattern name when the route carries the numeric id', async () => {
+            const user = userEvent.setup();
+            renderPattern({ ...patternData, id: '1' });
+
+            await user.click(await screen.findByRole('tab', { name: 'Used by' }));
+
+            expect(implementationServiceMock.fetchImplementations).toHaveBeenCalledWith('pattern-namespace', 'test-pattern', '2.0.0');
+        });
+
+        it('does not show the tab for an architecture', async () => {
+            render(
+                <MemoryRouter>
+                    <DiagramSection data={architectureData} />
+                </MemoryRouter>
+            );
+
+            await waitFor(() => expect(calmServiceMock.fetchArchitectureSummaries).toHaveBeenCalled());
+            expect(screen.queryByRole('tab', { name: /used by/i })).not.toBeInTheDocument();
+            expect(implementationServiceMock.fetchImplementations).not.toHaveBeenCalled();
+        });
+
+        it('hides the tab for a pattern that has no name', async () => {
+            calmServiceMock.fetchPatternSummaries.mockResolvedValueOnce([{ id: 1, name: 'Signup Pattern', description: '' }]);
+            renderPattern({ ...patternData, id: '1' });
+
+            await waitFor(() => expect(calmServiceMock.fetchPatternSummaries).toHaveBeenCalled());
+            expect(screen.queryByRole('tab', { name: /used by/i })).not.toBeInTheDocument();
+            expect(implementationServiceMock.fetchImplementations).not.toHaveBeenCalled();
+        });
+
+        it('says so in the panel when the hub does not support the lookup', async () => {
+            implementationServiceMock.fetchImplementations.mockResolvedValue(null);
+            const user = userEvent.setup();
+            renderPattern();
+
+            await user.click(await screen.findByRole('tab', { name: 'Used by' }));
+
+            expect(await screen.findByText('Not available for this pattern.')).toBeInTheDocument();
+        });
+
+        it('says so in the panel when the lookup fails', async () => {
+            implementationServiceMock.fetchImplementations.mockRejectedValue(new Error('boom'));
+            const user = userEvent.setup();
+            renderPattern();
+
+            await user.click(await screen.findByRole('tab', { name: 'Used by' }));
+
+            expect(await screen.findByText('Could not load the architectures that use this version.')).toBeInTheDocument();
+        });
+
+        it('lists the architectures when the tab is clicked', async () => {
+            implementationServiceMock.fetchImplementations.mockResolvedValue(implementations);
+            const user = userEvent.setup();
+            renderPattern();
+
+            await user.click(await screen.findByRole('tab', { name: 'Used by' }));
+
+            expect(await screen.findByRole('link', { name: /trade-capture/ })).toHaveAttribute('href', '#/finos/architectures/trade-capture/1.2.0');
+            expect(screen.queryByTestId('drawer')).not.toBeInTheDocument();
+        });
+
+        it('shows the number of architectures only once the tab has loaded them, and keeps it', async () => {
+            implementationServiceMock.fetchImplementations.mockResolvedValue([
+                { namespace: 'finos', architectureId: 7, version: '1.0.0', customId: 'trade-capture' },
+                { namespace: 'finos', architectureId: 7, version: '1.1.0', customId: 'trade-capture' },
+                { namespace: 'other', architectureId: 7, version: '1.0.0' },
+            ]);
+            const user = userEvent.setup();
+            renderPattern();
+
+            await user.click(await screen.findByRole('tab', { name: 'Used by' }));
+            expect(await screen.findByRole('tab', { name: 'Used by (2)' })).toBeInTheDocument();
+
+            await user.click(screen.getByRole('tab', { name: 'Diagram' }));
+            expect(screen.getByRole('tab', { name: 'Used by (2)' })).toBeInTheDocument();
+        });
+
+        it('shows no number when the lookup fails', async () => {
+            implementationServiceMock.fetchImplementations.mockRejectedValue(new Error('boom'));
+            const user = userEvent.setup();
+            renderPattern();
+
+            await user.click(await screen.findByRole('tab', { name: 'Used by' }));
+
+            expect(await screen.findByText('Could not load the architectures that use this version.')).toBeInTheDocument();
+            expect(screen.getByRole('tab', { name: 'Used by' })).toBeInTheDocument();
+        });
+
+        it('asks again when the tab opens again after a failed lookup', async () => {
+            implementationServiceMock.fetchImplementations.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce(implementations);
+            const user = userEvent.setup();
+            renderPattern();
+
+            await user.click(await screen.findByRole('tab', { name: 'Used by' }));
+            expect(await screen.findByText('Could not load the architectures that use this version.')).toBeInTheDocument();
+            await user.click(screen.getByRole('tab', { name: 'Diagram' }));
+            await user.click(screen.getByRole('tab', { name: 'Used by' }));
+
+            expect(await screen.findByRole('link', { name: /trade-capture/ })).toBeInTheDocument();
+            expect(implementationServiceMock.fetchImplementations).toHaveBeenCalledTimes(2);
+        });
+
+        it('sends one request when the tab opens again on the same version', async () => {
+            implementationServiceMock.fetchImplementations.mockResolvedValue(implementations);
+            const user = userEvent.setup();
+            renderPattern();
+
+            await user.click(await screen.findByRole('tab', { name: 'Used by' }));
+            await screen.findByRole('link', { name: /trade-capture/ });
+            await user.click(screen.getByRole('tab', { name: 'Diagram' }));
+            await user.click(screen.getByRole('tab', { name: /^Used by/ }));
+
+            expect(await screen.findByRole('link', { name: /trade-capture/ })).toBeInTheDocument();
+            expect(implementationServiceMock.fetchImplementations).toHaveBeenCalledTimes(1);
+        });
+
+        it('asks again for a new version, only when the tab opens', async () => {
+            const user = userEvent.setup();
+            const { rerender } = renderPattern();
+
+            await user.click(await screen.findByRole('tab', { name: 'Used by' }));
+            await user.click(screen.getByRole('tab', { name: 'Diagram' }));
+            rerender(
+                <MemoryRouter>
+                    <DiagramSection data={{ ...patternData, version: '1.0.0' }} />
+                </MemoryRouter>
+            );
+            expect(implementationServiceMock.fetchImplementations).toHaveBeenCalledTimes(1);
+
+            await user.click(screen.getByRole('tab', { name: /^Used by/ }));
+
+            expect(implementationServiceMock.fetchImplementations).toHaveBeenCalledTimes(2);
+            expect(implementationServiceMock.fetchImplementations).toHaveBeenLastCalledWith('pattern-namespace', 'test-pattern', '1.0.0');
+        });
+
+        it('ignores a response for a version the page has left', async () => {
+            let resolveOld: (rows: typeof implementations) => void = () => {};
+            implementationServiceMock.fetchImplementations
+                .mockReturnValueOnce(new Promise((resolve) => (resolveOld = resolve)))
+                .mockResolvedValueOnce([]);
+            const user = userEvent.setup();
+            const { rerender } = renderPattern();
+
+            await user.click(await screen.findByRole('tab', { name: 'Used by' }));
+            rerender(
+                <MemoryRouter>
+                    <DiagramSection data={{ ...patternData, version: '1.0.0' }} />
+                </MemoryRouter>
+            );
+            expect(await screen.findByText(/No architectures use this version/)).toBeInTheDocument();
+            await act(async () => resolveOld(implementations));
+
+            await waitFor(() => expect(implementationServiceMock.fetchImplementations).toHaveBeenCalledTimes(2));
+            expect(screen.queryByRole('link', { name: /trade-capture/ })).not.toBeInTheDocument();
+            expect(screen.getByText(/No architectures use this version/)).toBeInTheDocument();
+        });
+
+        it('opens on the tab from a link, once the pattern name is known', async () => {
+            render(
+                <MemoryRouter initialEntries={['/?tab=used-by']}>
+                    <DiagramSection data={patternData} />
+                </MemoryRouter>
+            );
+
+            expect(await screen.findByText('Architectures that use this pattern version')).toBeInTheDocument();
+            await waitFor(() =>
+                expect(implementationServiceMock.fetchImplementations).toHaveBeenCalledWith('pattern-namespace', 'test-pattern', '2.0.0')
+            );
+        });
+
+        it('does not show the panel from a link when the pattern has no name', async () => {
+            calmServiceMock.fetchPatternSummaries.mockResolvedValueOnce([{ id: 1, name: 'Signup Pattern', description: '' }]);
+            render(
+                <MemoryRouter initialEntries={['/?tab=used-by']}>
+                    <DiagramSection data={{ ...patternData, id: '1' }} />
+                </MemoryRouter>
+            );
+
+            await waitFor(() => expect(calmServiceMock.fetchPatternSummaries).toHaveBeenCalled());
+            expect(screen.queryByText('Architectures that use this pattern version')).not.toBeInTheDocument();
+            expect(screen.queryByText('Not available for this pattern.')).not.toBeInTheDocument();
+        });
+
+        it('offers the tab in the mobile view menu', async () => {
+            const restore = mockMobileViewport();
+            const user = userEvent.setup();
+            renderPattern();
+
+            await waitFor(() => expect(calmServiceMock.fetchPatternSummaries).toHaveBeenCalled());
+            await user.click(screen.getByRole('button', { name: /view options/i }));
+
+            expect(await screen.findByRole('tab', { name: 'Used by' })).toBeInTheDocument();
+            expect(implementationServiceMock.fetchImplementations).not.toHaveBeenCalled();
+            restore();
+        });
     });
 
     describe('with architecture data', () => {
@@ -359,7 +592,7 @@ describe('DiagramSection', () => {
 
             await user.click(screen.getByText('nav-2.0.0'));
 
-            expect(navigate).toHaveBeenCalledWith('/arch-namespace/architectures/test-arch/2.0.0', expect.objectContaining({ state: null }));
+            expect(navigate).toHaveBeenCalledWith('/arch-namespace/architectures/test-arch/2.0.0', expect.objectContaining({ state: { timelineSelection: true } }));
         });
 
         it('keeps the timeline bar visible across tabs', async () => {
@@ -373,6 +606,89 @@ describe('DiagramSection', () => {
             expect(screen.getByTestId('timeline-bar')).toBeInTheDocument();
             await user.click(screen.getByRole('tab', { name: /json/i }));
             expect(screen.getByTestId('timeline-bar')).toBeInTheDocument();
+        });
+    });
+
+    describe('explicit timeline current-moment redirect', () => {
+        const momentFor = (key: string, version: string, validFrom: string) => ({
+            'unique-id': key,
+            'node-type': 'moment',
+            name: key,
+            'valid-from': validFrom,
+            details: {
+                'detailed-architecture': `/calm/namespaces/arch-namespace/architectures/test-arch/versions/${version}`,
+            },
+        });
+        const latestArchitectureData = { ...architectureData, version: '2.0.0' };
+        const crumb: BreadcrumbItem = { namespace: 'finos', type: 'patterns', id: 'api-gateway-pattern', version: '1.0.0' };
+
+        beforeEach(() => {
+            calmServiceMock.fetchArchitectureTimeline.mockResolvedValue({
+                'current-moment': 'before',
+                moments: [momentFor('before', '1.0.0', '2024-01-01'), momentFor('after', '2.0.0', '2025-01-01')],
+            });
+        });
+
+        const renderAt = (data: Data & { calmType: 'Architectures' }, state: unknown) =>
+            render(
+                <MemoryRouter initialEntries={[{ pathname: '/', state }]}>
+                    <DiagramSection data={data} breadcrumbs={[crumb]} />
+                </MemoryRouter>
+            );
+
+        it('redirects a landing on the latest version to the current moment once', async () => {
+            const navigate = vi.fn();
+            vi.mocked(useNavigate).mockReturnValue(navigate);
+
+            renderAt(latestArchitectureData, null);
+
+            await waitFor(() => {
+                expect(navigate).toHaveBeenCalledWith('/arch-namespace/architectures/test-arch/1.0.0', {
+                    replace: true,
+                    state: null,
+                });
+            });
+            expect(navigate).toHaveBeenCalledTimes(1);
+        });
+
+        it('marks a timeline selection in navigation state and keeps the existing state', async () => {
+            const navigate = vi.fn();
+            vi.mocked(useNavigate).mockReturnValue(navigate);
+            const user = userEvent.setup();
+
+            renderAt(architectureData, { breadcrumbs: [crumb] });
+            await user.click(screen.getByText('nav-2.0.0'));
+
+            expect(navigate).toHaveBeenCalledWith('/arch-namespace/architectures/test-arch/2.0.0', {
+                state: { breadcrumbs: [crumb], timelineSelection: true },
+            });
+        });
+
+        it('stays on the latest version when the timeline selected it', async () => {
+            const navigate = vi.fn();
+            vi.mocked(useNavigate).mockReturnValue(navigate);
+
+            // The instance that mounts after a timeline selection (Hub remounts
+            // DiagramSection on every version change).
+            renderAt(latestArchitectureData, { breadcrumbs: [crumb], timelineSelection: true });
+
+            await waitFor(() => {
+                expect(screen.getByTestId('timeline-bar')).toHaveAttribute('data-moments', '2');
+            });
+            expect(navigate).not.toHaveBeenCalled();
+        });
+
+        it('does not carry the timeline flag into breadcrumb navigation', async () => {
+            const navigate = vi.fn();
+            vi.mocked(useNavigate).mockReturnValue(navigate);
+            const user = userEvent.setup();
+
+            renderAt(latestArchitectureData, { breadcrumbs: [crumb], timelineSelection: true });
+            await user.click(screen.getByRole('button', { name: 'api-gateway-pattern' }));
+
+            expect(navigate).toHaveBeenCalledWith('/finos/patterns/api-gateway-pattern/1.0.0', {
+                state: { breadcrumbs: [] },
+            });
         });
     });
 

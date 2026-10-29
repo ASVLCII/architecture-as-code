@@ -24,10 +24,17 @@ docker compose --profile readonly-static up
 docker compose --profile readonly-native up
 ```
 
+The `jvm` and `native` profiles seed MongoDB with the released CALM meta-schemas from
+`calm-hub/target/calm-schemas/release`. Make it first, from the repository root:
+
+```shell
+npm ci && npm run calm-hub:copy-schemas
+```
+
 A version of CALM Hub will be up and running on: [http://localhost:8080](http://localhost:8080)
 The API documentation can be found at: [http://localhost:8080/q/swagger-ui/#/](http://localhost:8080/q/swagger-ui/#/)
 
-> **Note:** The `jvm` and `native` profiles start CALM Hub with the `no-auth` Quarkus profile for local convenience. The default profile is **secure** (see [Auth Profiles](#auth-profiles) below) and rejects all requests with 401 unless you explicitly select an auth profile. The `readonly-static` and `readonly-native` profiles use the `standalone` Quarkus profile (NitriteDB baked into the image) and reject all mutating HTTP verbs with 405.
+> **Note:** The `jvm` and `native` profiles start CALM Hub with the `no-auth` Quarkus profile for local convenience. The default profile is **secure** (see [Auth Profiles](#auth-profiles) below) and rejects all requests with 401 unless you explicitly select an auth profile. The `readonly-static` and `readonly-native` profiles use the `standalone` Quarkus profile (NitriteDB baked into the image) and reject all mutating HTTP verbs with 405. They serve the `$id` of each name-based document under `https://hub.calm.finos.org`. To use a different base, set `CALM_HUB_BASE_URL`.
 
 ## Working with the project
 
@@ -114,12 +121,32 @@ java -Dquarkus.profile=standalone -jar target/quarkus-app/quarkus-run.jar
 ```
 
 > **Note:** In dev mode use `-Pstandalone` (the Maven profile), not `-Dquarkus.profile=standalone`.
-> The `quarkus-maven-plugin` forks a separate JVM for dev mode and does not reliably propagate
-> `-D` flags from the Maven CLI into that process; the Maven profile `standalone` configures the
-> plugin's own `systemProperties` so `quarkus.profile=standalone` reaches the running app.
-> The `standalone` Quarkus profile activates `calm.database.mode=standalone` and suppresses
-> MongoDB health-checks and dev-services. For production (`java -jar …`) the JVM flag
-> `-Dquarkus.profile=standalone` is passed directly to the process and works as expected.
+> Dev mode does not apply a `quarkus.profile` set with `-D` on the Maven command line; the Maven
+> profile `standalone` sets it through the plugin's own `systemProperties`, so it reaches the
+> running app. Other `-D` flags reach the app as usual.
+> The `standalone` Quarkus profile activates `calm.database.mode=standalone`, suppresses
+> MongoDB health-checks and turns off all dev services, so standalone dev mode needs no Docker.
+> To start the Grafana LGTM observability dev service, add `-Dquarkus.devservices.enabled=true`
+> (needs Docker). OpenTelemetry stays off until you also set `CALM_OTEL_DISABLED=false`.
+> For production (`java -jar …`) the JVM flag `-Dquarkus.profile=standalone` is passed directly
+> to the process and works as expected.
+
+#### Seeding a standalone instance
+
+`nitrite/init-nitrite.sh` loads namespaces, schemas, and the name-based documents through the REST API.
+
+```shell
+bash nitrite/init-nitrite.sh -u http://localhost:18091
+```
+
+`-u` is the URL the script calls. Name-based document `$id` values use `CALM_HUB_BASE_URL` or `--base-url`. That value must equal the server's `calm.hub.base-url` (default `http://localhost:8080`). When you do not set it, the script uses the `-u` URL. The Hub returns HTTP 400 when a seed `$id` does not match `calm.hub.base-url`.
+
+```shell
+java -Dquarkus.profile=standalone -Dquarkus.http.port=18091 \
+  -Dcalm.hub.base-url=http://localhost:18091 \
+  -jar target/quarkus-app/quarkus-run.jar
+bash nitrite/init-nitrite.sh -u http://localhost:18091
+```
 
 ### Mongo Database Startup
 

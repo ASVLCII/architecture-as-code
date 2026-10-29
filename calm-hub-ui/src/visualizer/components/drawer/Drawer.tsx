@@ -9,7 +9,17 @@ import { CalmService } from '../../../service/calm-service.js';
 import { buildViewportKey } from '../../services/node-position-service.js';
 import { DropzoneEmptyState } from './DropzoneEmptyState.js';
 import { colors } from '../../../theme/colors.js';
-import type { DrawerProps, Control, Decorator } from '../../contracts/contracts.js';
+import { ControlEvaluationContext } from '../../context/ControlEvaluationContext.js';
+import { containersOfContainment, evaluationsByElement } from '../reactflow/utils/controlEvaluations.js';
+import type { DrawerProps, Control, Decorator, ControlEvaluationDecorator } from '../../contracts/contracts.js';
+import type { Data } from '../../../model/calm.js';
+
+const EVALUATION_REFRESH_MS = 5000;
+/** After this many failed refreshes in a row, refresh every EVALUATION_BACKOFF_MS until one succeeds. */
+const EVALUATION_FAILURES_BEFORE_BACKOFF = 3;
+const EVALUATION_BACKOFF_MS = 30000;
+const NO_DECORATORS: Decorator[] = [];
+const NO_EVALUATIONS: ControlEvaluationDecorator[] = [];
 
 /**
  * A pattern declares its nodes under `properties.nodes`, as `prefixItems` or `items`.
@@ -37,11 +47,10 @@ export function Drawer({
     onPositionsChange,
 }: DrawerProps) {
     const calmService = useMemo(() => new CalmService(), []);
-    const [calmInstance, setCALMInstance] = useState<CalmArchitectureSchema | undefined>(undefined);
-    const [patternInstance, setPatternInstance] = useState<Record<string, unknown> | undefined>(undefined);
     const [fileInstance, setFileInstance] = useState<Record<string, unknown> | undefined>(undefined);
     const [dropError, setDropError] = useState<string | undefined>(undefined);
-    const [decoratorsState, setDecoratorsState] = useState<Decorator[]>([]);
+    // Fetched lists are kept with the `data` they belong to, so another resource never shows them.
+    const [loadedDecorators, setLoadedDecorators] = useState<{ source: Data; values: Decorator[] } | null>(null);
     const [isMetadataCollapsed, setIsMetadataCollapsed] = useState(true);
     const [metadataPanelHeight, setMetadataPanelHeight] = useState(250);
 
@@ -87,31 +96,116 @@ export function Drawer({
     const effectiveDefaultLayout = fileInstance ? undefined : defaultLayout;
     const effectiveLayoutEpoch = fileInstance ? undefined : layoutEpoch;
 
-    useEffect(() => {
-        const source = fileInstance ?? data?.data;
-        const isPattern = !!source && (isPatternData(source) || (!fileInstance && data?.calmType === 'Patterns'));
+    const source = fileInstance ?? data?.data;
+    const isPattern = !!source && (isPatternData(source) || (!fileInstance && data?.calmType === 'Patterns'));
+    const patternInstance = isPattern ? (source as Record<string, unknown>) : undefined;
+    const calmInstance = isPattern ? undefined : (source as CalmArchitectureSchema | undefined);
 
-        setPatternInstance(isPattern ? (source as Record<string, unknown>) : undefined);
-        setCALMInstance(isPattern ? undefined : (source as CalmArchitectureSchema | undefined));
-    }, [fileInstance, data]);
+    // Decorators and evaluations exist only for a loaded architecture, never for a dropped file.
+    const architectureData = data && data.calmType === 'Architectures' && !fileInstance ? data : undefined;
 
     useEffect(() => {
-        if (decoratorsProp !== undefined) return; // controlled externally — skip fetch
-        if (!data || data.calmType !== 'Architectures' || fileInstance) {
-            setDecoratorsState([]);
-            return;
-        }
+        if (decoratorsProp !== undefined || !architectureData) return; // controlled externally — skip fetch
         let cancelled = false;
 
         calmService
-            .fetchDeploymentDecoratorsForArchitecture(data.name, data.id, data.version)
-            .then((values) => { if (!cancelled) setDecoratorsState(values); })
-            .catch(() => { if (!cancelled) setDecoratorsState([]); });
+            .fetchDeploymentDecoratorsForArchitecture(architectureData.name, architectureData.id, architectureData.version)
+            .catch((): Decorator[] => [])
+            .then((values) => { if (!cancelled) setLoadedDecorators({ source: architectureData, values }); });
 
         return () => { cancelled = true; };
-    }, [data, fileInstance, decoratorsProp, calmService]);
+    }, [architectureData, decoratorsProp, calmService]);
 
-    const decorators = decoratorsProp ?? decoratorsState;
+    const decorators =
+        decoratorsProp ??
+        (architectureData && loadedDecorators?.source === architectureData ? loadedDecorators.values : NO_DECORATORS);
+
+    const [loadedEvaluations, setLoadedEvaluations] = useState<{
+        source: Data;
+        values: ControlEvaluationDecorator[];
+    } | null>(null);
+    // Another version's evaluations must not show on this one while its first fetch is in flight.
+    const evaluations =
+        architectureData && loadedEvaluations?.source === architectureData ? loadedEvaluations.values : NO_EVALUATIONS;
+
+    // Control evaluations change while the diagram is open (a merge gateway records each decision), so they are
+    // re-read every few seconds rather than once. State changes only when the list does, so an unchanged refresh
+    // does not re-render the diagram. A failed refresh keeps what was last shown; a hidden tab is not polled.
+    useEffect(() => {
+        if (!architectureData) return;
+        const { name, id, version } = architectureData;
+        let cancelled = false;
+        // Polls can overlap on a slow network; a response older than one already applied is dropped.
+        let requested = 0;
+        let applied = 0;
+        // A slug is resolved to the version's target once, not on every poll. An unresolved one is retried.
+        let target: Promise<string | undefined> | undefined;
+        let failures = 0;
+        let ticksToSkip = 0;
+
+        const update = (seq: number, next: ControlEvaluationDecorator[]) => {
+            if (cancelled || seq < applied) return;
+            applied = seq;
+            failures = 0;
+            ticksToSkip = 0;
+            setLoadedEvaluations((prev) =>
+                prev?.source === architectureData && JSON.stringify(prev.values) === JSON.stringify(next)
+                    ? prev
+                    : { source: architectureData, values: next }
+            );
+        };
+        const fail = (seq: number, error: unknown) => {
+            if (cancelled || seq < applied) return;
+            failures += 1;
+            if (failures === 1) {
+                console.error('%s', `Could not refresh control evaluations for ${name}/${id}/${version}:`, error);
+            }
+            if (failures >= EVALUATION_FAILURES_BEFORE_BACKOFF) {
+                ticksToSkip = EVALUATION_BACKOFF_MS / EVALUATION_REFRESH_MS - 1;
+            }
+        };
+        const resolveTarget = async () => {
+            target ??= calmService.resolveArchitectureVersionTarget(name, id, version);
+            const resolved = await target;
+            if (!resolved) {
+                target = undefined;
+                throw new Error(`Could not resolve architecture ${id}`);
+            }
+            return resolved;
+        };
+        const load = () => {
+            if (document.visibilityState === 'hidden') return;
+            const seq = ++requested;
+            resolveTarget()
+                .then((resolved) => calmService.fetchControlEvaluationDecorators(name, resolved))
+                .then((values) => update(seq, values as ControlEvaluationDecorator[]))
+                .catch((error) => fail(seq, error));
+        };
+        const tick = () => {
+            if (ticksToSkip > 0) {
+                ticksToSkip -= 1;
+                return;
+            }
+            load();
+        };
+        const onVisibilityChange = () => {
+            if (document.visibilityState === 'visible') load();
+        };
+
+        load();
+        const timer = setInterval(tick, EVALUATION_REFRESH_MS);
+        document.addEventListener('visibilitychange', onVisibilityChange);
+        return () => {
+            cancelled = true;
+            clearInterval(timer);
+            document.removeEventListener('visibilitychange', onVisibilityChange);
+        };
+    }, [architectureData, calmService]);
+
+    const evaluationMap = useMemo(
+        () => evaluationsByElement(evaluations, containersOfContainment(calmInstance?.relationships)),
+        [evaluations, calmInstance],
+    );
 
 
     const adrs = useMemo((): string[] => {
@@ -171,7 +265,8 @@ export function Drawer({
         return { ...nodeControls, ...relationshipControls, ...rootControls };
     }, [calmInstance]);
 
-    const hasMetadata = Object.keys(controls).length > 0 || decorators.length > 0 || adrs.length > 0;
+    const hasMetadata =
+        Object.keys(controls).length > 0 || decorators.length > 0 || adrs.length > 0 || evaluations.length > 0;
 
     const hasContent = !!(calmInstance || patternInstance);
 
@@ -226,41 +321,43 @@ export function Drawer({
                             {dropError}
                         </div>
                     )}
-                    <div
-                        style={{
-                            flex: 1,
-                            minHeight: 0,
-                            ...(hasMetadata && !isMetadataCollapsed ? { height: `calc(100% - ${metadataPanelHeight}px)` } : {}),
-                        }}
-                    >
-                        {patternInstance ? (
-                            <PatternVisualizer
-                                patternData={patternInstance}
-                                onNodeClick={handlePatternNodeClick}
-                                onEdgeClick={handlePatternEdgeClick}
-                                onBackgroundClick={closeSidebar}
-                                viewportKey={viewportKey}
-                                defaultLayout={effectiveDefaultLayout}
-                                layoutEpoch={effectiveLayoutEpoch}
-                                onPositionsChange={fileInstance ? undefined : onPositionsChange}
-                            />
-                        ) : calmInstance ? (
-                            <ReactFlowVisualizer
-                                calmData={calmInstance}
-                                onNodeClick={handleNodeClick}
-                                onEdgeClick={handleEdgeClick}
-                                onBackgroundClick={closeSidebar}
-                                viewportKey={viewportKey}
-                                defaultLayout={effectiveDefaultLayout}
-                                layoutEpoch={effectiveLayoutEpoch}
-                                // Withheld for a dropped file. This feeds DiagramSection's
-                                // "Save as default layout", which is scoped to the loaded
-                                // architecture, so passing it through would save a dropped
-                                // file's positions as that architecture's shared default.
-                                onPositionsChange={fileInstance ? undefined : onPositionsChange}
-                            />
-                        ) : null}
-                    </div>
+                    <ControlEvaluationContext.Provider value={evaluationMap}>
+                        <div
+                            style={{
+                                flex: 1,
+                                minHeight: 0,
+                                ...(hasMetadata && !isMetadataCollapsed ? { height: `calc(100% - ${metadataPanelHeight}px)` } : {}),
+                            }}
+                        >
+                            {patternInstance ? (
+                                <PatternVisualizer
+                                    patternData={patternInstance}
+                                    onNodeClick={handlePatternNodeClick}
+                                    onEdgeClick={handlePatternEdgeClick}
+                                    onBackgroundClick={closeSidebar}
+                                    viewportKey={viewportKey}
+                                    defaultLayout={effectiveDefaultLayout}
+                                    layoutEpoch={effectiveLayoutEpoch}
+                                    onPositionsChange={fileInstance ? undefined : onPositionsChange}
+                                />
+                            ) : calmInstance ? (
+                                <ReactFlowVisualizer
+                                    calmData={calmInstance}
+                                    onNodeClick={handleNodeClick}
+                                    onEdgeClick={handleEdgeClick}
+                                    onBackgroundClick={closeSidebar}
+                                    viewportKey={viewportKey}
+                                    defaultLayout={effectiveDefaultLayout}
+                                    layoutEpoch={effectiveLayoutEpoch}
+                                    // Withheld for a dropped file. This feeds DiagramSection's
+                                    // "Save as default layout", which is scoped to the loaded
+                                    // architecture, so passing it through would save a dropped
+                                    // file's positions as that architecture's shared default.
+                                    onPositionsChange={fileInstance ? undefined : onPositionsChange}
+                                />
+                            ) : null}
+                        </div>
+                    </ControlEvaluationContext.Provider>
                     {hasMetadata && !patternInstance && (
                         <div
                             style={{
@@ -272,6 +369,7 @@ export function Drawer({
                                 controls={controls}
                                 decorators={decorators}
                                 adrs={adrs}
+                                evaluations={evaluations}
                                 onNodeClick={handleControlNodeClick}
                                 isCollapsed={isMetadataCollapsed}
                                 onToggleCollapse={() => setIsMetadataCollapsed(!isMetadataCollapsed)}

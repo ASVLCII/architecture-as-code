@@ -28,10 +28,9 @@ export interface CanvasState {
     panelWidth: number;
     expandControlKey: string | null;
     documentControls: Record<string, unknown>;
-    buildingBlocks: unknown[];
+    standardNodes: unknown[];
     loadedPatterns: unknown[];
-    loadedTemplates: unknown[];
-    loadedStandards: unknown[];
+    hubLoading: boolean;
 
     // Actions
     setNodes: (nodes: Node[]) => void;
@@ -47,6 +46,7 @@ export interface CanvasState {
     resetDrill: () => void;
     setPanelWidth: (width: number) => void;
     setExpandControlKey: (key: string | null) => void;
+    setHubLoading: (loading: boolean) => void;
 }
 
 export const useCanvasStore = create<CanvasState>((set) => ({
@@ -62,10 +62,9 @@ export const useCanvasStore = create<CanvasState>((set) => ({
     panelWidth: 280,
     expandControlKey: null,
     documentControls: {},
-    buildingBlocks: [],
+    standardNodes: [],
     loadedPatterns: [],
-    loadedTemplates: [],
-    loadedStandards: [],
+    hubLoading: false,
 
     setNodes: (nodes) => set({ nodes }),
     setEdges: (edges) => set({ edges }),
@@ -82,4 +81,5 @@ export const useCanvasStore = create<CanvasState>((set) => ({
     resetDrill: () => set({ drillStack: [], readonlyMode: false }),
     setPanelWidth: (width) => set({ panelWidth: width }),
     setExpandControlKey: (key) => set({ expandControlKey: key }),
+    setHubLoading: (loading) => set({ hubLoading: loading }),
 }));

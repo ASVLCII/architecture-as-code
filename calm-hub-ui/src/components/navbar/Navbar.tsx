@@ -8,6 +8,9 @@ import { useTheme } from '../../theme/useTheme.js';
 import { UserAccessContext } from '../../admin/context/UserAccessContext.js';
 import { UserMenu } from '../user-menu/UserMenu.js';
 import { isAuthServiceEnabled } from '../../authService.js';
+import { useUiConfig } from '../ui-config/UiConfigContext.js';
+import { EnvironmentPill } from './EnvironmentPill.js';
+import { MenuInfo } from './MenuInfo.js';
 
 /**
  * The navy-and-blue lockup is unreadable on a dark base, so dark gets a white one.
@@ -33,26 +36,32 @@ export function Navbar({ storage }: NavbarProps = {}) {
     const showAdminLink = !loading && (isGlobalAdmin || grants.some((g) => g.permission === 'admin'));
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const { theme, toggleTheme } = useTheme(storage);
+    const { environment, identity, items } = useUiConfig();
 
     const closeMenu = () => setIsMenuOpen(false);
 
     return (
         <div className="navbar relative bg-base-100 border-b-2 border-base-200 text-primary-content gap-1">
-            <div className="navbar-start flex items-center gap-1 min-w-0">
+            {/* Below lg the logo stays in the flex flow: equal flex-1 sides keep it
+                centred, but neither side can shrink under its content, so page
+                actions in #navbar-actions push the logo aside instead of covering it. */}
+            <div className="navbar-start flex items-center gap-1 max-lg:w-auto max-lg:flex-1 lg:min-w-0">
                 <button
-                    className="btn btn-ghost gap-2 text-primary shrink-0"
+                    // Narrower on mobile with a pill, which must fit beside the centred logo.
+                    className={`btn btn-ghost gap-2 text-primary shrink-0${environment ? ' px-2 lg:px-4' : ''}`}
                     onClick={() => setIsMenuOpen((v) => !v)}
                     aria-label={isMenuOpen ? 'Close menu' : 'Open menu'}
                 >
                     <IoMenuOutline className="h-5 w-5" />
                 </button>
+                {environment && <EnvironmentPill environment={environment} />}
             </div>
-            <div className="navbar-center absolute left-1/2 -translate-x-1/2">
-                <Link to="/" className="btn btn-ghost min-w-0 px-1" aria-label="CALM Hub home">
-                    <img src={LOGO_SRC[theme]} alt="CALM Logo" className="h-10 logo" />
+            <div className="navbar-center min-w-0 max-lg:shrink lg:absolute lg:left-1/2 lg:-translate-x-1/2">
+                <Link to="/" className="btn btn-ghost min-w-0 px-1 max-lg:shrink" aria-label="CALM Hub home">
+                    <img src={LOGO_SRC[theme]} alt="CALM Logo" className="h-10 logo min-w-0 object-contain" />
                 </Link>
             </div>
-            <div className="navbar-end flex items-center gap-1 min-w-0 shrink-0">
+            <div className="navbar-end flex items-center gap-1 shrink-0 max-lg:w-auto max-lg:flex-1 lg:min-w-0">
                 {/* Portal target for page-level actions (e.g. the diagram's
                     view-options menu), always visible across breakpoints. */}
                 <div id="navbar-actions" className="flex items-center" />
@@ -92,6 +101,7 @@ export function Navbar({ storage }: NavbarProps = {}) {
                         </li>
                     )}
                 </ul>
+                <MenuInfo identity={identity} items={items} />
             </div>
         </div>
     );

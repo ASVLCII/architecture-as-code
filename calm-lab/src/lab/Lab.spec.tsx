@@ -5,6 +5,7 @@ import {QUICK_START} from '../test-support/quick-start-lesson';
 import {fileText, markdownSection, nodes, validatedEditorFile} from '../lessons/checks';
 import {HOME_DIR, type Lesson} from '../lessons/types';
 import {workspaceKey} from './storage';
+import {CALM_SCHEMA_RELEASE} from '../schemas';
 
 // ReactFlow needs a measured canvas; the diagram is not what these tests are about.
 // It echoes its input so a test can see which file it was given.
@@ -88,12 +89,12 @@ describe('Lab', () => {
         await waitFor(() => expect(stepOneCompleted()).toBe(true));
     });
 
-    it('shows the CLI version in the status bar, as `calm --version` prints it', async () => {
+    it('shows the pinned CALM release and the CLI version in the status bar, as `calm --version` prints it', async () => {
         await act(async () => {
             renderLab();
         });
 
-        expect(screen.getByText('CALM 1.2 · CALM CLI 9.9.9-test')).toBeInTheDocument();
+        expect(screen.getByText(`CALM ${CALM_SCHEMA_RELEASE} · CALM CLI 9.9.9-test`)).toBeInTheDocument();
     });
 
     it('lists a parse error without claiming the list was truncated', async () => {
@@ -361,6 +362,13 @@ describe('Lab with more than one editable file', () => {
         expect(screen.getByTestId('diagram').textContent).toBe(SECOND_TEXT);
     });
 
+    it('draws the saved text after a save', async () => {
+        await act(async () => { renderLab({lesson: multi}); });
+        await saveEditor(SECOND_TEXT);
+        fireEvent.click(screen.getByRole('tab', {name: /Diagram/}));
+        expect(screen.getByTestId('diagram').textContent).toBe(SECOND_TEXT);
+    });
+
     it('returns to the editor file on reset', async () => {
         await act(async () => { renderLab({lesson: multi}); });
         openFile(ADR);
@@ -386,6 +394,14 @@ describe('Lab with more than one editable file', () => {
             await waitFor(() => expect(screen.getByRole('option', {name: 'architecture/generated.json'})).toBeInTheDocument());
             openFile(GENERATED);
             expect(screen.getByLabelText('Edit architecture/generated.json')).toHaveValue(GENERATED_TEXT);
+        });
+
+        it('drops a file the command created on reset', async () => {
+            await act(async () => { renderLab({lesson: withPattern}); });
+            await generate(GENERATED);
+            await waitFor(() => expect(screen.getByRole('option', {name: 'architecture/generated.json'})).toBeInTheDocument());
+            await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Reset lesson'})); });
+            expect(screen.queryByRole('option', {name: 'architecture/generated.json'})).toBeNull();
         });
 
         it('shows the new content of the open file', async () => {

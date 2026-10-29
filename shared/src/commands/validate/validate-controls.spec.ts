@@ -222,11 +222,9 @@ describe('validateAllControls', () => {
         expect(result.jsonSchemaOutputs[0].message).toContain('Could not resolve');
     });
 
-    it('loads config via getSchema when config-url is present', async () => {
+    it('loads config as a control document when config-url is present', async () => {
         const schemaDir = makeSchemaDirectory(requirementSchema);
-        (schemaDir.getSchema as ReturnType<typeof vi.fn>)
-            .mockResolvedValueOnce(requirementSchema)   // first call: requirement schema
-            .mockResolvedValueOnce(inlineConfig);        // second call: config doc
+        (schemaDir.loadDocument as ReturnType<typeof vi.fn>).mockResolvedValueOnce(inlineConfig);
 
         const arch = {
             nodes: [{
@@ -247,7 +245,7 @@ describe('validateAllControls', () => {
         };
         const result = await validateAllControls(arch, undefined, schemaDir, false);
         expect(result.hasErrors).toBe(false);
-        expect(schemaDir.getSchema).toHaveBeenCalledWith('https://example.com/config.json');
+        expect(schemaDir.loadDocument).toHaveBeenCalledWith('https://example.com/config.json', 'control');
     });
 
     it('skips control detail when neither config nor config-url is present', async () => {
@@ -333,9 +331,7 @@ describe('validateAllControls', () => {
 
     it('emits error when config-url document fails to load', async () => {
         const schemaDir = makeSchemaDirectory();
-        (schemaDir.getSchema as ReturnType<typeof vi.fn>)
-            .mockResolvedValueOnce(requirementSchema)                 // requirement schema
-            .mockRejectedValueOnce(new Error('config fetch failed')); // config-url
+        (schemaDir.loadDocument as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('config fetch failed'));
         const arch = {
             nodes: [{
                 'unique-id': 'node-1', 'node-type': 'service', name: 'N', description: 'D',
@@ -358,9 +354,7 @@ describe('validateAllControls', () => {
 
     it('skips validation when config-url document is not found', async () => {
         const schemaDir = makeSchemaDirectory();
-        (schemaDir.getSchema as ReturnType<typeof vi.fn>)
-            .mockResolvedValueOnce(requirementSchema)  // requirement schema
-            .mockResolvedValueOnce(undefined);         // config-url -> not found
+        (schemaDir.loadDocument as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
         const arch = {
             nodes: [{
                 'unique-id': 'node-1', 'node-type': 'service', name: 'N', description: 'D',
@@ -452,5 +446,47 @@ describe('validateAllControls', () => {
         const result = await validateAllControls(arch, undefined, schemaDir, false);
         expect(result.hasErrors).toBe(true);
         expect(result.jsonSchemaOutputs[0].message).toContain('[object Object]');
+    });
+
+    // Characterization test for a KNOWN RELEASE LIMITATION. Control references
+    // authored by the VS Code plugin as Hub CURIEs (e.g.
+    // `security:controls:micro-segmentation@1.0.0`) are NOT resolvable by
+    // `calm validate` today: the requirement-url does not start with '#', so it
+    // is passed straight to SchemaDirectory.getSchema, which treats it as a URL
+    // and fails to fetch it. Validation therefore ERRORS rather than skipping.
+    // The follow-up is to route control CURIEs through a Hub-aware resolver that
+    // expands them to canonical domain-scoped URLs. This test pins the current
+    // failure mode so the follow-up change is deliberate and visible.
+    describe('control CURIE requirement-url (known release limitation)', () => {
+        const curie = 'security:controls:micro-segmentation@1.0.0';
+
+        it('errors because the SchemaDirectory cannot resolve a control CURIE as a URL', async () => {
+            const schemaDir = makeSchemaDirectory();
+            (schemaDir.getSchema as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+                new Error(`Could not resolve ${curie}`)
+            );
+            const arch = architectureWithNodeControl(inlineConfig, curie);
+            const result = await validateAllControls(arch, undefined, schemaDir, false);
+
+            expect(result.hasErrors).toBe(true);
+            expect(result.jsonSchemaOutputs[0].message).toContain(
+                'Could not load requirement schema'
+            );
+            expect(result.jsonSchemaOutputs[0].message).toContain(curie);
+        });
+
+        it('errors (not silently skips) when the CURIE resolves to no schema', async () => {
+            // Even if the resolver returns nothing rather than throwing, the
+            // control is reported as an error, not skipped.
+            const schemaDir = makeSchemaDirectory();
+            (schemaDir.getSchema as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
+            const arch = architectureWithNodeControl(inlineConfig, curie);
+            const result = await validateAllControls(arch, undefined, schemaDir, false);
+
+            expect(result.hasErrors).toBe(true);
+            expect(result.jsonSchemaOutputs[0].message).toContain(
+                'Requirement schema not found'
+            );
+        });
     });
 });

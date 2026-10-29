@@ -1,6 +1,8 @@
 // Environment variables:
 // - CALM_DB_NAME: Name of the MongoDB database to use (default: calmSchemas)
-// - CALM_SCHEMA_BASE_PATH: Base path to load schemas from (default: /calm)
+// - CALM_RELEASE_SCHEMA_PATH: Path of the released schemas, <version>/meta per release
+//   (default: /calm-schemas/release). The compose files mount calm-hub/target/calm-schemas/release,
+//   which `npm run calm-hub:copy-schemas` fills from the @finos/calm-schema npm packages.
 //
 // Set environment variables if required, and run `mongosh init-mongo.js` to
 // initialize the database with counters, schema, namespaces, and patterns.
@@ -436,12 +438,11 @@ if (db.counters.countDocuments({ _id: "interfaceStoreCounter" }) === 0) {
 }
 
 logSection("Schemas");
-// Load schemas dynamically from the CALM release and draft directories.
-// Set CALM_SCHEMA_BASE_PATH env var to override the default base path (/calm).
+// Load the released schemas from the npm copy. Set CALM_RELEASE_SCHEMA_PATH to override the default.
 const fs = require('fs');
-const basePath = (typeof process !== 'undefined' && process.env.CALM_SCHEMA_BASE_PATH)
-    ? process.env.CALM_SCHEMA_BASE_PATH
-    : '/calm';
+const releaseSchemaPath = (typeof process !== 'undefined' && process.env.CALM_RELEASE_SCHEMA_PATH)
+    ? process.env.CALM_RELEASE_SCHEMA_PATH
+    : '/calm-schemas/release';
 
 // Load controls dynamically from domain subdirectories.
 // Set CALM_CONTROLS_BASE_PATH env var to override the default base path (/controls).
@@ -452,12 +453,17 @@ const controlsBasePath = (typeof process !== 'undefined' && process.env.CALM_CON
 function loadSchemasFromDir(baseDir, prefix) {
     if (!fs.existsSync(baseDir)) {
         logFail(`Schema directory not found at ${baseDir}, skipping`);
-        logFail(`Set CALM_SCHEMA_BASE_PATH environment variable to load schemas from a different location`);
+        logFail(`Set CALM_RELEASE_SCHEMA_PATH to load schemas from a different location`);
         return;
     }
     const versions = fs.readdirSync(baseDir).filter(f =>
         fs.statSync(`${baseDir}/${f}`).isDirectory() && !f.startsWith('.')
     );
+    if (versions.length === 0) {
+        // A bind mount of a missing host directory is an empty directory, not an error.
+        logFail(`No schema versions in ${baseDir}`);
+        return;
+    }
     for (const ver of versions) {
         const version = `${prefix}/${ver}`;
         if (db.schemas.countDocuments({ version: version }) === 0) {
@@ -477,8 +483,7 @@ function loadSchemasFromDir(baseDir, prefix) {
     }
 }
 
-loadSchemasFromDir(`${basePath}/release`, 'release');
-loadSchemasFromDir(`${basePath}/draft`, 'draft');
+loadSchemasFromDir(releaseSchemaPath, 'release');
 
 function loadControlsFromDir(baseDir) {
     if (!fs.existsSync(baseDir)) {
@@ -520,10 +525,9 @@ if (db.namespaces.countDocuments() === 0) {
         { name: "ai-governance-v2", description: "AI Governance v2 namespace" },
         { name: "qcon", description: "QCon scenario 3 namespace" },
         { name: "finos.fluxnova", description: "FluxNova BPM example architectures" },
-        { name: "finos.sdlc-common-controls", description: "The Standard the SDLC Common Controls Catalog control requirements conform to" },
-        { name: "finos.agentic-sdlc", description: "Agentic SDLC Blueprint: the pattern and Standards that enforce the SDLC Common Controls on its estate" }
+        { name: "finos.sdlc-common-controls", description: "The Standard the SDLC Common Controls Catalog control requirements conform to" }
     ]);
-    logSuccess("Initialized namespaces: finos, workshop, traderx, ai-governance-v2, qcon, finos.fluxnova, finos.sdlc-common-controls, finos.agentic-sdlc");
+    logSuccess("Initialized namespaces: finos, workshop, traderx, ai-governance-v2, qcon, finos.fluxnova, finos.sdlc-common-controls");
 } else {
     logSkip("Namespaces already exist, no initialization needed");
 }
@@ -731,7 +735,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                     versions:
                     {
                         "1.0.0": {
-                            "$schema": "https://calm.finos.org/calm/schemas/2025-03/meta/calm.json",
+                            "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
                             "$id": "https://calm.finos.org/calm/namespaces/finos/patterns/1/versions/1.0.0",
                             "title": "API Gateway Pattern",
                             "type": "object",
@@ -741,7 +745,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                     "minItems": 4,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                                             "properties": {
                                                 "well-known-endpoint": {
                                                     "type": "string"
@@ -763,12 +767,22 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                     "minItems": 1,
                                                     "prefixItems": [
                                                         {
-                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/host-port-interface",
+                                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                                             "properties": {
                                                                 "unique-id": {
                                                                     "const": "api-gateway-ingress"
+                                                                },
+                                                                "host": {
+                                                                    "type": "string"
+                                                                },
+                                                                "port": {
+                                                                    "type": "integer"
                                                                 }
-                                                            }
+                                                            },
+                                                            "required": [
+                                                                "host",
+                                                                "port"
+                                                            ]
                                                         }
                                                     ]
                                                 }
@@ -779,7 +793,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                             ]
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                                             "properties": {
                                                 "description": {
                                                     "const": "The API Consumer making an authenticated and authorized request"
@@ -796,7 +810,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                             }
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                                             "properties": {
                                                 "description": {
                                                     "const": "The API Producer serving content"
@@ -815,12 +829,22 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                     "minItems": 1,
                                                     "prefixItems": [
                                                         {
-                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/host-port-interface",
+                                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                                             "properties": {
                                                                 "unique-id": {
                                                                     "const": "producer-ingress"
+                                                                },
+                                                                "host": {
+                                                                    "type": "string"
+                                                                },
+                                                                "port": {
+                                                                    "type": "integer"
                                                                 }
-                                                            }
+                                                            },
+                                                            "required": [
+                                                                "host",
+                                                                "port"
+                                                            ]
                                                         }
                                                     ]
                                                 }
@@ -830,7 +854,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                             ]
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                                             "properties": {
                                                 "description": {
                                                     "const": "The Identity Provider used to verify the bearer token"
@@ -853,7 +877,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                     "minItems": 4,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "api-consumer-api-gateway"
@@ -886,7 +910,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                             }
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "api-gateway-idp"
@@ -912,7 +936,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                             }
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "api-gateway-api-producer"
@@ -941,7 +965,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                             }
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "api-consumer-idp"
@@ -988,7 +1012,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                     versions:
                     {
                         "1.0.0": {
-                            "$schema": "https://calm.finos.org/calm/schemas/2025-03/meta/calm.json",
+                            "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
                             "$id": "https://calm.finos.org/calm/namespaces/workshop/patterns/1/versions/1.0.0",
                             "type": "object",
                             "title": "Conference Signup Pattern",
@@ -1000,7 +1024,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                     "maxItems": 5,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1021,19 +1045,25 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                     "maxItems": 1,
                                                     "prefixItems": [
                                                         {
-                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/url-interface",
+                                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                                             "properties": {
                                                                 "unique-id": {
                                                                     "const": "conference-website-url"
+                                                                },
+                                                                "url": {
+                                                                    "type": "string"
                                                                 }
-                                                            }
+                                                            },
+                                                            "required": [
+                                                                "url"
+                                                            ]
                                                         }
                                                     ]
                                                 }
                                             }
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1054,19 +1084,29 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                     "maxItems": 1,
                                                     "prefixItems": [
                                                         {
-                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/host-port-interface",
+                                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                                             "properties": {
                                                                 "unique-id": {
                                                                     "const": "load-balancer-host-port"
+                                                                },
+                                                                "host": {
+                                                                    "type": "string"
+                                                                },
+                                                                "port": {
+                                                                    "type": "integer"
                                                                 }
-                                                            }
+                                                            },
+                                                            "required": [
+                                                                "host",
+                                                                "port"
+                                                            ]
                                                         }
                                                     ]
                                                 }
                                             }
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1087,27 +1127,39 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                     "maxItems": 2,
                                                     "prefixItems": [
                                                         {
-                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/container-image-interface",
+                                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                                             "properties": {
                                                                 "unique-id": {
                                                                     "const": "attendees-image"
+                                                                },
+                                                                "image": {
+                                                                    "type": "string"
                                                                 }
-                                                            }
+                                                            },
+                                                            "required": [
+                                                                "image"
+                                                            ]
                                                         },
                                                         {
-                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/port-interface",
+                                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                                             "properties": {
                                                                 "unique-id": {
                                                                     "const": "attendees-port"
+                                                                },
+                                                                "port": {
+                                                                    "type": "integer"
                                                                 }
-                                                            }
+                                                            },
+                                                            "required": [
+                                                                "port"
+                                                            ]
                                                         }
                                                     ]
                                                 }
                                             }
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1128,27 +1180,39 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                     "maxItems": 2,
                                                     "prefixItems": [
                                                         {
-                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/container-image-interface",
+                                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                                             "properties": {
                                                                 "unique-id": {
                                                                     "const": "database-image"
+                                                                },
+                                                                "image": {
+                                                                    "type": "string"
                                                                 }
-                                                            }
+                                                            },
+                                                            "required": [
+                                                                "image"
+                                                            ]
                                                         },
                                                         {
-                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/port-interface",
+                                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                                             "properties": {
                                                                 "unique-id": {
                                                                     "const": "database-port"
+                                                                },
+                                                                "port": {
+                                                                    "type": "integer"
                                                                 }
-                                                            }
+                                                            },
+                                                            "required": [
+                                                                "port"
+                                                            ]
                                                         }
                                                     ]
                                                 }
                                             }
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1173,7 +1237,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                     "maxItems": 4,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1203,7 +1267,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                             ]
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1233,7 +1297,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                             ]
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1263,7 +1327,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                             ]
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "deployed-in-k8s-cluster"
@@ -1305,7 +1369,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                     versions:
                     {
                         "1.0.0": {
-                            "$schema": "https://calm.finos.org/calm/schemas/2025-03/meta/calm.json",
+                            "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
                             "$id": "https://calm.finos.org/calm/namespaces/workshop/patterns/2/versions/1.0.0",
                             "type": "object",
                             "title": "Conference Secure Signup Pattern",
@@ -1317,7 +1381,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                     "maxItems": 5,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1338,19 +1402,25 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                     "maxItems": 1,
                                                     "prefixItems": [
                                                         {
-                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/url-interface",
+                                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                                             "properties": {
                                                                 "unique-id": {
                                                                     "const": "conference-website-url"
+                                                                },
+                                                                "url": {
+                                                                    "type": "string"
                                                                 }
-                                                            }
+                                                            },
+                                                            "required": [
+                                                                "url"
+                                                            ]
                                                         }
                                                     ]
                                                 }
                                             }
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1371,19 +1441,29 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                     "maxItems": 1,
                                                     "prefixItems": [
                                                         {
-                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/host-port-interface",
+                                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                                             "properties": {
                                                                 "unique-id": {
                                                                     "const": "load-balancer-host-port"
+                                                                },
+                                                                "host": {
+                                                                    "type": "string"
+                                                                },
+                                                                "port": {
+                                                                    "type": "integer"
                                                                 }
-                                                            }
+                                                            },
+                                                            "required": [
+                                                                "host",
+                                                                "port"
+                                                            ]
                                                         }
                                                     ]
                                                 }
                                             }
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1404,27 +1484,39 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                     "maxItems": 2,
                                                     "prefixItems": [
                                                         {
-                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/container-image-interface",
+                                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                                             "properties": {
                                                                 "unique-id": {
                                                                     "const": "attendees-image"
+                                                                },
+                                                                "image": {
+                                                                    "type": "string"
                                                                 }
-                                                            }
+                                                            },
+                                                            "required": [
+                                                                "image"
+                                                            ]
                                                         },
                                                         {
-                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/port-interface",
+                                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                                             "properties": {
                                                                 "unique-id": {
                                                                     "const": "attendees-port"
+                                                                },
+                                                                "port": {
+                                                                    "type": "integer"
                                                                 }
-                                                            }
+                                                            },
+                                                            "required": [
+                                                                "port"
+                                                            ]
                                                         }
                                                     ]
                                                 }
                                             }
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1445,27 +1537,39 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                     "maxItems": 2,
                                                     "prefixItems": [
                                                         {
-                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/container-image-interface",
+                                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                                             "properties": {
                                                                 "unique-id": {
                                                                     "const": "database-image"
+                                                                },
+                                                                "image": {
+                                                                    "type": "string"
                                                                 }
-                                                            }
+                                                            },
+                                                            "required": [
+                                                                "image"
+                                                            ]
                                                         },
                                                         {
-                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/interface.json#/defs/port-interface",
+                                                            "$ref": "https://calm.finos.org/release/1.3/meta/interface.json#/defs/interface-type",
                                                             "properties": {
                                                                 "unique-id": {
                                                                     "const": "database-port"
+                                                                },
+                                                                "port": {
+                                                                    "type": "integer"
                                                                 }
-                                                            }
+                                                            },
+                                                            "required": [
+                                                                "port"
+                                                            ]
                                                         }
                                                     ]
                                                 }
                                             }
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/node",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/node",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1481,7 +1585,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                     "const": "system"
                                                 },
                                                 "controls": {
-                                                    "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/control.json#/defs/controls",
+                                                    "$ref": "https://calm.finos.org/release/1.3/meta/control.json#/defs/controls",
                                                     "properties": {
                                                         "security": {
                                                             "type": "object",
@@ -1495,14 +1599,14 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                                     "maxItems": 1,
                                                                     "prefixItems": [
                                                                         {
-                                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/control.json#/defs/control-detail",
+                                                                            "$ref": "https://calm.finos.org/release/1.3/meta/control.json#/defs/control-detail",
                                                                             "properties": {
-                                                                                "control-requirement-url": {
+                                                                                "requirement-url": {
                                                                                     "const": "https://calm.finos.org/workshop/controls/micro-segmentation.requirement.json"
                                                                                 }
                                                                             },
                                                                             "required": [
-                                                                                "control-config-url"
+                                                                                "config-url"
                                                                             ]
                                                                         }
                                                                     ]
@@ -1520,7 +1624,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                     "minItems": 1,
                                     "prefixItems": [
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1545,7 +1649,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                     }
                                                 },
                                                 "controls": {
-                                                    "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/control.json#/defs/controls",
+                                                    "$ref": "https://calm.finos.org/release/1.3/meta/control.json#/defs/controls",
                                                     "properties": {
                                                         "security": {
                                                             "type": "object",
@@ -1559,14 +1663,14 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                                     "maxItems": 1,
                                                                     "prefixItems": [
                                                                         {
-                                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/control.json#/defs/control-detail",
+                                                                            "$ref": "https://calm.finos.org/release/1.3/meta/control.json#/defs/control-detail",
                                                                             "properties": {
-                                                                                "control-requirement-url": {
+                                                                                "requirement-url": {
                                                                                     "const": "https://calm.finos.org/workshop/controls/permitted-connection.requirement.json"
                                                                                 }
                                                                             },
                                                                             "required": [
-                                                                                "control-config-url"
+                                                                                "config-url"
                                                                             ]
                                                                         }
                                                                     ]
@@ -1581,7 +1685,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                             ]
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1606,7 +1710,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                     }
                                                 },
                                                 "controls": {
-                                                    "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/control.json#/defs/controls",
+                                                    "$ref": "https://calm.finos.org/release/1.3/meta/control.json#/defs/controls",
                                                     "properties": {
                                                         "security": {
                                                             "type": "object",
@@ -1620,14 +1724,14 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                                     "maxItems": 1,
                                                                     "prefixItems": [
                                                                         {
-                                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/control.json#/defs/control-detail",
+                                                                            "$ref": "https://calm.finos.org/release/1.3/meta/control.json#/defs/control-detail",
                                                                             "properties": {
-                                                                                "control-requirement-url": {
+                                                                                "requirement-url": {
                                                                                     "const": "https://calm.finos.org/workshop/controls/permitted-connection.requirement.json"
                                                                                 }
                                                                             },
                                                                             "required": [
-                                                                                "control-config-url"
+                                                                                "config-url"
                                                                             ]
                                                                         }
                                                                     ]
@@ -1642,7 +1746,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                             ]
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                                             "type": "object",
                                             "properties": {
                                                 "unique-id": {
@@ -1667,7 +1771,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                     }
                                                 },
                                                 "controls": {
-                                                    "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/control.json#/defs/controls",
+                                                    "$ref": "https://calm.finos.org/release/1.3/meta/control.json#/defs/controls",
                                                     "properties": {
                                                         "security": {
                                                             "type": "object",
@@ -1681,14 +1785,14 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                                                     "maxItems": 1,
                                                                     "prefixItems": [
                                                                         {
-                                                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/control.json#/defs/control-detail",
+                                                                            "$ref": "https://calm.finos.org/release/1.3/meta/control.json#/defs/control-detail",
                                                                             "properties": {
-                                                                                "control-requirement-url": {
+                                                                                "requirement-url": {
                                                                                     "const": "https://calm.finos.org/workshop/controls/permitted-connection.requirement.json"
                                                                                 }
                                                                             },
                                                                             "required": [
-                                                                                "control-config-url"
+                                                                                "config-url"
                                                                             ]
                                                                         }
                                                                     ]
@@ -1704,7 +1808,7 @@ if (isEmptyDatabase && db.patterns.countDocuments() === 0) {
                                             ]
                                         },
                                         {
-                                            "$ref": "https://calm.finos.org/calm/schemas/2025-03/meta/core.json#/defs/relationship",
+                                            "$ref": "https://calm.finos.org/release/1.3/meta/core.json#/defs/relationship",
                                             "properties": {
                                                 "unique-id": {
                                                     "const": "deployed-in-k8s-cluster"
@@ -2073,28 +2177,44 @@ if (isEmptyDatabase && db.flows.countDocuments() === 0) {
                 {
                     flowId: NumberInt(1),
                     name: "Flow 1",
-                    description: "This is a non-compliant flow document. Just creating something to simulate",
+                    description: "A placeholder flow document for testing",
                     versions:
                     {
                         "1.0.0": {
-                            "$schema": "https://raw.githubusercontent.com/finos/architecture-as-code/main/calm/draft/2024-04/meta/calm.json",
+                            "$schema": "https://calm.finos.org/release/1.3/meta/flow.json",
                             "$id": "https://raw.githubusercontent.com/finos/architecture-as-code/main/calm/flow/flow-1",
-                            "title": "Flow 1",
-                            "description": "This is a non-compliant flow document. Just creating something to simulate"
+                            "unique-id": "flow-1",
+                            "name": "Flow 1",
+                            "description": "A placeholder flow document for testing",
+                            "transitions": [
+                                {
+                                    "relationship-unique-id": "placeholder-relationship",
+                                    "sequence-number": 1,
+                                    "description": "A placeholder transition"
+                                }
+                            ]
                         }
                     }
                 },
                 {
                     flowId: NumberInt(2),
                     name: "Flow 2",
-                    description: "This is a non-compliant flow document. Just creating something to simulate",
+                    description: "A placeholder flow document for testing",
                     versions:
                     {
                         "1.0.0": {
-                            "$schema": "https://raw.githubusercontent.com/finos/architecture-as-code/main/calm/draft/2024-04/meta/calm.json",
+                            "$schema": "https://calm.finos.org/release/1.3/meta/flow.json",
                             "$id": "https://raw.githubusercontent.com/finos/architecture-as-code/main/calm/flow/flow-2",
-                            "title": "Flow 2",
-                            "description": "This is a non-compliant flow document. Just creating something to simulate"
+                            "unique-id": "flow-2",
+                            "name": "Flow 2",
+                            "description": "A placeholder flow document for testing",
+                            "transitions": [
+                                {
+                                    "relationship-unique-id": "placeholder-relationship",
+                                    "sequence-number": 1,
+                                    "description": "A placeholder transition"
+                                }
+                            ]
 
 
                         }
@@ -2220,14 +2340,14 @@ if (isEmptyDatabase && db.architectures.countDocuments() === 0) {
             architectures: [{
                 architectureId: NumberInt(1),
                 name: "Architecture 1",
-                description: "This is a non-compliant arch document. Just creating something to simulate",
+                description: "A placeholder architecture document for testing",
                 versions:
                 {
                     "1.0.0": {
-                        "$schema": "https://raw.githubusercontent.com/finos/architecture-as-code/main/calm/draft/2024-04/meta/calm.json",
+                        "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
                         "$id": "https://raw.githubusercontent.com/finos/architecture-as-code/main/calm/arch-1",
                         "title": "Architecture 1",
-                        "description": "This is a non-compliant arch document. Just creating something to simulate"
+                        "description": "A placeholder architecture document for testing"
                     }
                 }
             }]
@@ -2395,7 +2515,7 @@ if (isEmptyDatabase && db.architectures.countDocuments() === 0) {
                 versions:
                 {
                     "1.0.0": {
-                        "$schema": "https://calm.finos.org/draft/2025-03/meta/calm.json",
+                        "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
                         "nodes": [
                             {
                                 "unique-id": "traderx-system",
@@ -2862,7 +2982,7 @@ if (isEmptyDatabase && db.architectures.countDocuments() === 0) {
                 description: "User → MCP Server (cloud-hosted) → API Service → Database. FINOS AIR AI Governance controls applied directly on nodes and relationships.",
                 versions: {
                     "1.0.0": {
-                        "$schema": "https://calm.finos.org/draft/2025-03/meta/calm.json",
+                        "$schema": "https://calm.finos.org/release/1.3/meta/calm.json",
                         "unique-id": "mcp-api-pipeline",
                         "name": "MCP Server API Pipeline",
                         "description": "User → MCP Server (cloud-hosted) → API Service → Database. FINOS AIR AI Governance controls applied directly on nodes and relationships.",
@@ -6655,7 +6775,7 @@ if (db.decorators.countDocuments() === 0) {
                 {
                     decoratorId: NumberInt(1),
                     decorator: {
-                        "$schema": "https://calm.finos.org/draft/2026-03/standards/deployment/deployment.decorator.schema.json",
+                        "$schema": "https://calm.finos.org/standards/deployment/1.0/deployment.decorator.standard.json",
                         "unique-id": "finos-architecture-1-deployment",
                         "type": "deployment",
                         "target": [
@@ -6680,7 +6800,7 @@ if (db.decorators.countDocuments() === 0) {
                 {
                     decoratorId: NumberInt(2),
                     decorator: {
-                        "$schema": "https://calm.finos.org/draft/2026-03/standards/deployment/deployment.decorator.schema.json",
+                        "$schema": "https://calm.finos.org/standards/deployment/1.0/deployment.decorator.standard.json",
                         "unique-id": "finos-architecture-1-deployment-v2",
                         "type": "deployment",
                         "target": [
@@ -6703,7 +6823,7 @@ if (db.decorators.countDocuments() === 0) {
                 {
                     decoratorId: NumberInt(3),
                     decorator: {
-                        "$schema": "https://calm.finos.org/draft/2026-03/standards/deployment/deployment.decorator.schema.json",
+                        "$schema": "https://calm.finos.org/standards/deployment/1.0/deployment.decorator.standard.json",
                         "unique-id": "finos-architecture-1-deployment-v3",
                         "type": "deployment",
                         "target": [
@@ -6724,30 +6844,6 @@ if (db.decorators.countDocuments() === 0) {
                             "notes": "Third production deployment is currently rolling out with updated Helm chart values"
                         }
                     }
-                },
-                {
-                    decoratorId: NumberInt(4),
-                    decorator: {
-                        "$schema": "https://calm.finos.org/draft/2026-03/standards/deployment/deployment.decorator.schema.json",
-                        "unique-id": "finos-pattern-1-deployment",
-                        "type": "deployment",
-                        "target": [
-                            "/calm/namespaces/finos/patterns/1/versions/1-0-0"
-                        ],
-                        "target-type": [
-                            "pattern"
-                        ],
-                        "applies-to": [
-                            "node-a", "relationship-x"
-                        ],
-                        "data": {
-                            "start-time": "2026-02-15T09:30:00Z",
-                            "end-time": "2026-02-15T09:35:20Z",
-                            "status": "completed",
-                            "deployment-url": "https://github.com/finos/actions/runs/987654321",
-                            "notes": "Pattern deployment via GitHub Actions"
-                        }
-                    }
                 }
             ]
         },
@@ -6757,7 +6853,7 @@ if (db.decorators.countDocuments() === 0) {
                 {
                     decoratorId: NumberInt(1),
                     decorator: {
-                        "$schema": "https://calm.finos.org/draft/2026-03/standards/deployment/deployment.decorator.schema.json",
+                        "$schema": "https://calm.finos.org/standards/deployment/1.0/deployment.decorator.standard.json",
                         "unique-id": "workshop-conference-deployment",
                         "type": "deployment",
                         "target": [
@@ -6782,7 +6878,6 @@ if (db.decorators.countDocuments() === 0) {
                 {
                     decoratorId: NumberInt(2),
                     decorator: {
-                        "$schema": "https://calm.finos.org/draft/2026-03/standards/observability/observability.decorator.schema.json",
                         "unique-id": "workshop-conference-monitoring",
                         "type": "observability",
                         "target": [

@@ -109,7 +109,8 @@ jobs:
             - name: Smoke test
               run: |
                   docker network create smoke-net
-                  docker run -d --name mongo --network smoke-net mongo:8
+                  # Disables tcmalloc per-CPU caches so MongoDB starts on 6.19+ kernels (SERVER-121912)
+                  docker run -d --name mongo --network smoke-net -e GLIBC_TUNABLES=glibc.pthread.rseq=1 mongo:8
                   docker run -d --name calmhub --network smoke-net \
                     -p 8080:8080 \
                     -e QUARKUS_MONGODB_CONNECTION_STRING=mongodb://mongo:27017 \
@@ -160,7 +161,7 @@ jobs:
                   touch "/tmp/digests/${digest#sha256:}"
 
             - name: Upload digest
-              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
               with:
                   name: digests-native-${{ matrix.arch }}
                   path: /tmp/digests/*

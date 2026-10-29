@@ -34,7 +34,7 @@ sub-architectures.
 ## 2. Assumptions
 
 - **A1: Downstream expects the current `ValidationOutcome` contract.** `hasErrors`/`hasWarnings`
-  drive process exit codes (`exitBasedOffOfValidationOutcome`); formatters read `jsonSchema*` and
+  drive the CLI's process exit codes; formatters read `jsonSchema*` and
   `spectral*` output arrays and each `ValidationOutput` field. Behaviour-preservation applies to this
   external output *shape*; it does not mandate always-on recursion, which is policy-controlled (O6).
 - **A2: `SchemaDirectory` is the single resolution boundary.** All remote/relative document and
@@ -255,7 +255,7 @@ flowchart TD
     C --> D[SEMANTIC: ControlsValidationRule<br/>iterateControls -> requirement schema -> AJV]
     D --> E[RECURSIVE: NodeDetailsValidationRule<br/>recurse detailed-architecture per sub-arch]
     E --> F[Aggregate -> ValidationOutcome]
-    F --> G[exitBasedOffOfValidationOutcome / formatOutput]
+    F --> G[formatOutput / CLI exit code]
 ```
 
 - **LINT: Spectral (`SpectralValidationRule`).** Runs the `rules-pattern`, `rules-architecture`
@@ -298,6 +298,14 @@ JSON-Schema error two levels deep appears in the top-level outcome with a compou
 A sub-architecture reference the policy permits but that cannot be loaded or validated is reported as
 a single `node-details-validation` error at the referencing node's
 `/nodes/{i}/details/detailed-architecture` path. A reference the policy forbids is not an error.
+
+When more than one node references the same sub-architecture, the two cases are different on purpose:
+
+- A reference that cannot be loaded is reported at each node that references it. The user can then
+  find and fix all of these references.
+- A sub-architecture that loads is validated once. Its own findings, or a failure to validate it,
+  are reported once, at the path of the first node that references it. A shared sub-architecture
+  that is not valid does not repeat its findings for each node.
 
 ### Callers and CalmHub
 
