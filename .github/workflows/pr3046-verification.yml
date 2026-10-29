@@ -20,6 +20,7 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - name: Build unmodified upstream for coverage comparison
         run: |
+          git fetch --depth=1 origin 8bac0ba7b5403ceb00879e0f2cf980f667b5ecc1
           git checkout 8bac0ba7b5403ceb00879e0f2cf980f667b5ecc1
           npm run build:cli
           npm run build --workspace @calmstudio/calm-core --workspace @calmstudio/mcp
