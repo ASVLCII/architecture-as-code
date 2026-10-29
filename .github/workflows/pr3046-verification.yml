@@ -27,9 +27,11 @@ jobs:
           npm test --workspace cli -- src/cli.e2e.spec.ts --coverage.enabled=false
           npm test --workspace calm-lab -- src/cli/diff.spec.ts --coverage.enabled=false
       - name: Build all workspaces
-        run: npm run build
+        run: |
+          npm run build --workspace @calmstudio/calm-core --workspace @calmstudio/mcp
+          npm run build
       - name: Full workspace tests with coverage
-        run: npm test -- --coverage
+        run: npm run test --workspaces --if-present -- --coverage
       - name: Lint all workspaces
         run: npm run lint
       - name: Typecheck learning lab
