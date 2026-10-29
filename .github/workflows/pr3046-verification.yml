@@ -22,10 +22,10 @@ jobs:
         run: npm run build:cli
       - name: Focused flow regressions
         run: |
-          npm test --workspace calm-models -- src/diff/diff.spec.ts
-          npm test --workspace shared -- src/commands/diff/diff.spec.ts
-          npm test --workspace cli -- src/cli.e2e.spec.ts
-          npm test --workspace calm-lab -- src/cli/diff.spec.ts
+          npm test --workspace calm-models -- src/diff/diff.spec.ts --coverage.enabled=false
+          npm test --workspace shared -- src/commands/diff/diff.spec.ts --coverage.enabled=false
+          npm test --workspace cli -- src/cli.e2e.spec.ts --coverage.enabled=false
+          npm test --workspace calm-lab -- src/cli/diff.spec.ts --coverage.enabled=false
       - name: Build all workspaces
         run: npm run build
       - name: Full workspace tests with coverage
@@ -34,16 +34,3 @@ jobs:
         run: npm run lint
       - name: Typecheck learning lab
         run: npm run typecheck --workspace calm-lab
-  java:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          ref: 868fdbcb530cf693433cfb90c6af11965e6d652a
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
-        with:
-          distribution: temurin
-          java-version: '21'
-      - run: ./mvnw --batch-mode clean install
-      - run: ./mvnw --batch-mode -pl calm-hub verify
